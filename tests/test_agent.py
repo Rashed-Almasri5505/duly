@@ -151,3 +151,15 @@ def test_a_page_found_under_two_spellings_is_listed_once(sample_store, cfg, tmp_
     assert [s.url for s in ctx.sources] == unique
     again = web.search(sample_store, "Dell XPS 13 warranty claim support")      # from the cache
     assert [(s.url, s.via) for s in again] == [(u, "cached") for u in unique]
+
+
+def test_citation_marks_from_the_model_are_removed_from_the_answer(sample_store, cfg) -> None:
+    def script(model, messages, kwargs):
+        if "nano" in model.lower():
+            return message(json.dumps({"skill": "none"}))
+        return message('Covered until Sun 3 Jan 2027 【{"id":"obl-162a1b","loc":0}】.\n'
+                       '- Exclusions: accidental damage【{"id":0,"cursor":0,"loc":0}】 and spills【4†source】.')
+
+    llm, _ = fake_llm(cfg, script)
+    turn = run_turn(Context(store=sample_store, today=TODAY, skills=load_skills()), llm, "Am I covered?", cfg)
+    assert turn.answer == "Covered until Sun 3 Jan 2027.\n- Exclusions: accidental damage and spills."

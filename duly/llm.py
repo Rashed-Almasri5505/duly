@@ -26,6 +26,9 @@ from duly.config import REPO_ROOT, get_secret
 
 Thinking = Literal["default", "off", "low"]
 THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL)
+# Citation marks that Nemotron sometimes leaves in an answer, such as 【{"id":"obl-162a1b","loc":0}】 or 【4†source】:
+# they point into the model's own context and mean nothing to the reader.
+CITE_RE = re.compile(r"[ \t]*【(?:\{[^【】\n]*\}|[^【】\n]*†[^【】\n]*)】")
 
 
 class LLMError(RuntimeError):
@@ -285,7 +288,7 @@ def split_reasoning(message: Any) -> tuple[str, str | None]:
     if think:
         reasoning = (reasoning or "") + "\n".join(t[7:-8] for t in think)
         content = THINK_RE.sub("", content)
-    return content.strip(), reasoning or None
+    return CITE_RE.sub("", content).strip(), reasoning or None
 
 
 def utc_now() -> str:
