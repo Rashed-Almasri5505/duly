@@ -302,10 +302,12 @@ with tab_chat:
         render_turn(t)
     live, why = live_status()
     if live:
-        cols = st.columns(len(SUGGESTIONS))
-        for col, text in zip(cols, SUGGESTIONS):
-            if col.button(text, width="stretch", disabled=not docs):
-                ss.pending = text
+        if not ss.turns:
+            st.caption("Try one of these, or ask your own question below:")
+        for row in (SUGGESTIONS[:2], SUGGESTIONS[2:]):          # two per row, so each question reads in full
+            for col, text in zip(st.columns(2), row):
+                if col.button(text, width="stretch", disabled=not docs):
+                    ss.pending = text
         question = st.chat_input("Ask about your documents, deadlines, claims or renewals", disabled=not docs)
         question = question or ss.pop("pending", None)
         last = ss.turns[-1] if ss.turns else None
