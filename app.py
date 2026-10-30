@@ -457,7 +457,16 @@ with tab_docs:
             when = r.at[11:19]
             with st.expander(f"{when} · {r.destination} · {r.purpose} · {r.chars:,} characters · "
                              f"{r.placeholders} placeholders · {'✓ check passed' if r.check == 'passed' else '✗ blocked'}"):
-                st.html(f'<div class="doc">{highlight(r.payload)}</div>')
+                payload = r.payload
+                instructions = ""
+                if payload.startswith("[system]") and "\n\n[" in payload:
+                    # Duly's own instructions come first and are the same every time: folded, the rest first.
+                    instructions, _, rest = payload.partition("\n\n[")
+                    payload = "[" + rest
+                st.html(f'<div class="doc">{highlight(payload)}</div>' + (
+                    f'<details style="margin-top:6px"><summary style="color:#5B6B78;font-size:0.85rem;cursor:pointer">'
+                    f"Duly's instructions to the model ({len(instructions):,} characters, the same in every call)"
+                    f'</summary><div class="doc">{highlight(instructions)}</div></details>' if instructions else ""))
     else:
         st.caption("Nothing has left this computer yet in this visit.")
 
