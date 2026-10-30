@@ -5,7 +5,8 @@ and drafts what you need. The AI model never sees your personal details.**
 
 Built for the Nebius x NVIDIA Global AI Hackathon, Personal AI track.
 
-- Live demo: `<demo URL>` (if the demo is asleep, click the wake-up button and wait about 30 s)
+- Live demo: [duly-paperwork.streamlit.app](https://duly-paperwork.streamlit.app/) (free, no login; if the demo is
+  asleep, click the wake-up button and wait about 30 s)
 - Video: `<YouTube URL>`
 - License: [MIT](LICENSE)
 
