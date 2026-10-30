@@ -1,0 +1,99 @@
+{
+ "turn": {
+  "question": "What do I need to do in the next 30 days?",
+  "question_sent": "What do I need to do in the next 30 days?",
+  "answer": "**What’s due in the next 30 days**\n\n| Last day to act | What it is | Amount | Action needed |\n|-----------------|------------|--------|----------------|\n| **Mon 9 Nov 2026** (gym – renewal deadline) | Gym membership renewal – you must give written notice if you don’t want it to renew automatically | 3,600 SAR | Send a cancellation notice to Pulse Fitness Club **by 9 Nov 2026** (at least 14 days before the 23 Nov renewal date). |\n| **Wed 11 Nov 2026** (rent – third instalment) | Apartment rent payment | 10,500 SAR | Pay SAR 10,500 to Al Noor Real Estate Co. **on 11 Nov 2026**. |\n| **Sun 22 Nov 2026** (car insurance – renewal deadline) | Car insurance policy renewal – contact insurer to avoid a lapse | 2,350 SAR | Contact Harbor Mutual Insurance **by 22 Nov 2026** (at least 7 days before the 29 Nov expiry) to renew the policy. |\n\n**Notes**\n\n- No items fall within the next 7 days, so nothing is marked *urgent* right now.  \n- Only one payment (rent) is scheduled, so there are no payment‑date clashes.  \n- The gym membership renews automatically on 23 Nov 2026; taking no action will result in another year’s charge.  \n- The car insurance does **not** renew automatically, but you must act before the expiry to keep continuous coverage.  \n\nLet me know if you’d like a draft cancellation notice for the gym, a reminder added for any of these dates, or anything else.",
+  "removed": [],
+  "steps": [
+   {
+    "kind": "model",
+    "label": "route",
+    "model": "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B",
+    "tool": null,
+    "args": null,
+    "summary": "chose skill month-ahead",
+    "prompt_tokens": 222,
+    "completion_tokens": 12,
+    "latency_s": 0.352,
+    "cost_usd": 1.62e-05
+   },
+   {
+    "kind": "model",
+    "label": "step 1",
+    "model": "nvidia/nemotron-3-super-120b-a12b",
+    "tool": null,
+    "args": null,
+    "summary": "calls use_skill",
+    "prompt_tokens": 2237,
+    "completion_tokens": 59,
+    "latency_s": 1.198,
+    "cost_usd": 0.0007242
+   },
+   {
+    "kind": "tool",
+    "label": "use_skill",
+    "model": null,
+    "tool": "use_skill",
+    "args": {
+     "name": "month-ahead"
+    },
+    "summary": "loaded skill month-ahead",
+    "prompt_tokens": 0,
+    "completion_tokens": 0,
+    "latency_s": 0.0,
+    "cost_usd": 0.0
+   },
+   {
+    "kind": "model",
+    "label": "step 2",
+    "model": "nvidia/nemotron-3-super-120b-a12b",
+    "tool": null,
+    "args": null,
+    "summary": "calls list_deadlines",
+    "prompt_tokens": 2485,
+    "completion_tokens": 42,
+    "latency_s": 0.898,
+    "cost_usd": 0.0007832999999999999
+   },
+   {
+    "kind": "tool",
+    "label": "list_deadlines",
+    "model": null,
+    "tool": "list_deadlines",
+    "args": {
+     "within_days": 30
+    },
+    "summary": "3 items in the next 30 days",
+    "prompt_tokens": 0,
+    "completion_tokens": 0,
+    "latency_s": 0.016,
+    "cost_usd": 0.0
+   },
+   {
+    "kind": "model",
+    "label": "step 3",
+    "model": "nvidia/nemotron-3-super-120b-a12b",
+    "tool": null,
+    "args": null,
+    "summary": "answers",
+    "prompt_tokens": 3229,
+    "completion_tokens": 545,
+    "latency_s": 3.875,
+    "cost_usd": 0.0014592
+   }
+  ],
+  "sources": [],
+  "drafts": [],
+  "notes": [],
+  "reminders": [],
+  "skills_used": [
+   "month-ahead"
+  ],
+  "cost_usd": 0.0029828999999999997,
+  "seconds": 6.4,
+  "error": null,
+  "recorded_on": null,
+  "at": "2026-10-30T00:23:13+00:00"
+ },
+ "drafts": []
+}

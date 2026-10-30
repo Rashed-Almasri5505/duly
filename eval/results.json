@@ -1,0 +1,138 @@
+{
+ "date": "2026-10-30",
+ "models": {
+  "agent": "nvidia/nemotron-3-super-120b-a12b",
+  "reader": "nvidia/nemotron-3-super-120b-a12b",
+  "brief": "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B",
+  "router": "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B"
+ },
+ "reader": {
+  "runs": 3,
+  "documents_read": 12,
+  "deadlines_expected": 18,
+  "deadlines_found": 18,
+  "extra_items": 0,
+  "items_flagged_unverified": 0,
+  "median_latency_s": 2.2359999999999998,
+  "mean_cost_usd": 0.000632775
+ },
+ "assistant": {
+  "runs_per_question": 2,
+  "rows": [
+   {
+    "question": "My laptop screen started flickering. Am I still covered?",
+    "expected_skill": "warranty-claim",
+    "skill": "warranty-claim",
+    "required_tools_called": true,
+    "nudges": 1,
+    "blocked_calls": 0,
+    "outbound_calls": 7,
+    "removed": 0,
+    "error": null,
+    "seconds": 15.1,
+    "cost_usd": 0.0087,
+    "answered": true
+   },
+   {
+    "question": "My laptop screen started flickering. Am I still covered?",
+    "expected_skill": "warranty-claim",
+    "skill": "warranty-claim",
+    "required_tools_called": true,
+    "nudges": 0,
+    "blocked_calls": 0,
+    "outbound_calls": 6,
+    "removed": 0,
+    "error": null,
+    "seconds": 11.6,
+    "cost_usd": 0.00743,
+    "answered": true
+   },
+   {
+    "question": "I don't want to renew the gym. What do I do, and by when?",
+    "expected_skill": "cancel-before-renewal",
+    "skill": "cancel-before-renewal",
+    "required_tools_called": true,
+    "nudges": 0,
+    "blocked_calls": 0,
+    "outbound_calls": 7,
+    "removed": 0,
+    "error": null,
+    "seconds": 12.3,
+    "cost_usd": 0.00976,
+    "answered": true
+   },
+   {
+    "question": "I don't want to renew the gym. What do I do, and by when?",
+    "expected_skill": "cancel-before-renewal",
+    "skill": "cancel-before-renewal",
+    "required_tools_called": true,
+    "nudges": 0,
+    "blocked_calls": 0,
+    "outbound_calls": 7,
+    "removed": 0,
+    "error": null,
+    "seconds": 11.4,
+    "cost_usd": 0.00955,
+    "answered": true
+   },
+   {
+    "question": "What do I need to do in the next 30 days?",
+    "expected_skill": "month-ahead",
+    "skill": "month-ahead",
+    "required_tools_called": true,
+    "nudges": 0,
+    "blocked_calls": 0,
+    "outbound_calls": 3,
+    "removed": 0,
+    "error": null,
+    "seconds": 3.9,
+    "cost_usd": 0.0021,
+    "answered": true
+   },
+   {
+    "question": "What do I need to do in the next 30 days?",
+    "expected_skill": "month-ahead",
+    "skill": "month-ahead",
+    "required_tools_called": true,
+    "nudges": 0,
+    "blocked_calls": 0,
+    "outbound_calls": 3,
+    "removed": 0,
+    "error": null,
+    "seconds": 4.7,
+    "cost_usd": 0.00214,
+    "answered": true
+   },
+   {
+    "question": "How do I renew my car insurance without a gap?",
+    "expected_skill": "renewal-checklist",
+    "skill": "renewal-checklist",
+    "required_tools_called": true,
+    "nudges": 0,
+    "blocked_calls": 0,
+    "outbound_calls": 7,
+    "removed": 0,
+    "error": null,
+    "seconds": 14.1,
+    "cost_usd": 0.00825,
+    "answered": true
+   },
+   {
+    "question": "How do I renew my car insurance without a gap?",
+    "expected_skill": "renewal-checklist",
+    "skill": "renewal-checklist",
+    "required_tools_called": true,
+    "nudges": 0,
+    "blocked_calls": 0,
+    "outbound_calls": 7,
+    "removed": 0,
+    "error": null,
+    "seconds": 13.0,
+    "cost_usd": 0.00797,
+    "answered": true
+   }
+  ]
+ },
+ "total_cost_usd": 0.0635,
+ "model_calls": 57
+}
