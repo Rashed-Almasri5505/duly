@@ -354,7 +354,9 @@ with st.sidebar:
 
     st.markdown("### Usage")
     spent = sum(c.cost_usd for c in llm.calls)
-    st.caption(md(f"This visit: {len(llm.calls)} model calls, ${spent:.4f}; {web.live_calls} live web searches."))
+    calls, searches = len(llm.calls), web.live_calls
+    st.caption(md(f"This visit: {calls} model call{'s' if calls != 1 else ''}, ${spent:.4f}; "
+                  f"{searches} live web search{'es' if searches != 1 else ''}."))
     if DEMO:
         st.caption(md(f"Live questions and document reads left in this visit: {max(0, turn_cap - ss.live_turns)} of "
                       f"{turn_cap}. Shared demo budget left today: ${ledger.remaining_usd():.2f}."))
