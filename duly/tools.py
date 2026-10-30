@@ -27,6 +27,9 @@ class Context:
     skills: dict[str, Skill]
     web: TavilySearch | None = None
     allow_web: bool = True
+    # Text written through another agent (the MCP server) may hold details the user typed there: it is redacted in
+    # full before it is stored, instead of only masking known values as for Duly's own model.
+    writes_are_user_text: bool = False
     sources: list[Source] = field(default_factory=list)
     drafts: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
@@ -136,18 +139,20 @@ def run_tool(ctx: Context, name: str, args: dict[str, Any]) -> dict[str, Any]:
             return {"result": describe(result, ctx.today), "iso": result.isoformat()}
         if name == "save_draft":
             draft = ctx.store.add_draft(str(args.get("title", "Draft"))[:120], str(args.get("body", "")),
-                                        kind=str(args.get("kind", "email")), to=args.get("to"))
+                                        kind=str(args.get("kind", "email")), to=args.get("to"),
+                                        from_model=not ctx.writes_are_user_text)
             ctx.drafts.append(draft.id)
             return {"draft_id": draft.id, "saved": True, "note": "Saved for the user to review. Nothing was sent."}
         if name == "add_reminder":
             when = _parse_day(args.get("date", ""), ctx.today)
             if when < ctx.today:
                 return {"error": f"{when.isoformat()} is in the past"}
-            item = ctx.store.add_reminder(str(args.get("title", "Reminder"))[:120], when, str(args.get("note", "")))
+            item = ctx.store.add_reminder(str(args.get("title", "Reminder"))[:120], when, str(args.get("note", "")),
+                                          from_model=not ctx.writes_are_user_text)
             ctx.reminders.append(item.id)
             return {"reminder_id": item.id, "date": describe(when, ctx.today)}
         if name == "remember":
-            note = ctx.store.add_note(str(args.get("fact", ""))[:400])
+            note = ctx.store.add_note(str(args.get("fact", ""))[:400], from_model=not ctx.writes_are_user_text)
             ctx.notes.append(note.id)
             return {"note_id": note.id, "saved": True}
         if name == "forget":

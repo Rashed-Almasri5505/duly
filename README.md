@@ -57,13 +57,22 @@ flowchart LR
   G -->|"search queries"| V["Tavily<br/>official procedures"]
 ```
 
-- **Privacy firewall (local code, no model).** Detectors for IBANs and payment cards (with mod-97 and Luhn
-  checksums), e-mail addresses, phone numbers, Saudi national ID and iqama numbers, VINs, labelled fields such as
-  *Policy number*, *Address* or *Date of birth* (also in tables), and the names in your profile. Each value becomes a
-  placeholder such as `[PERSON_1]`; the same value always gets the same placeholder. Company names, dates and amounts
-  are kept, because the assistant needs them.
+- **Privacy firewall (local code, no model).** Detectors for:
+  - IBANs and payment cards, confirmed by their mod-97 and Luhn checksums, in any case or grouping;
+  - e-mail addresses; phone numbers (international, `00` and `966` prefixes, Saudi mobiles and landlines);
+    Saudi national ID and iqama numbers; VINs;
+  - labelled fields in English and Arabic (*Policy No.*, *D.O.B.*, *Address*, *رقم الهوية* ...), with or without
+    a colon (text copied from PDF forms), on the lines under a label that stands alone, and in table columns;
+  - numbers and dates named in a sentence ("my passport number is ...", "born on ..."), street addresses;
+  - the names in your profile, and every known value again wherever it reappears, including a person's first or
+    last name alone and account numbers grouped differently.
+
+  Each value becomes a placeholder such as `[PERSON_1]`; the same value always gets the same placeholder. Company
+  names, dates and amounts are kept, because the assistant needs them. Redaction runs in two passes, so a detail
+  repeated later in the same text is hidden too.
 - **One way out.** Every model call and web search goes through `duly/gateway.py`, which blocks the call if any value
-  from the vault is in the payload, and logs the exact text sent.
+  from the vault is in the payload, and logs the exact text sent. The check can only stop what the detectors found,
+  which is why the log shows each payload in full.
 - **The model never writes a date.** Code finds every date written in a document (with the document's day/month
   convention) and numbers them; Nemotron Super only says which dates matter and what each means, in a strict JSON
   schema. A notice period counts only if code finds the number of days in a sentence of the document.
@@ -173,7 +182,7 @@ Then add your own documents in the sidebar, or click **Load samples**. Your data
 Other commands:
 
 ```bash
-pytest                                                   # 22 tests, no network
+pytest                                                   # 55 tests, no network
 python scripts/smoke_test.py                             # checks the models and Tavily (under one cent)
 python scripts/ask.py "What do I need to do in the next 30 days?"
 python scripts/morning.py                                # the morning check; schedule it once (see the file)
@@ -207,14 +216,17 @@ skills/                 Agent Skills (SKILL.md)
 samples/                fictional documents, dated relative to today, and a recorded reading
 data/replays/           conversations recorded live, for offline mode
 scripts/                smoke test, CLI, morning check, evaluation, recorders
-tests/                  22 tests
+tests/                  55 tests (42 of them for the privacy firewall)
 eval/                   evaluation results
 ```
 
 ## Limitations and next steps
 
-- Personal details are found by rules. A name that is neither labelled nor in your profile can be missed; the
-  side-by-side view and the outbound log make that visible.
+- Personal details are found by rules, and rules miss things. A name that is neither labelled nor in your profile
+  ("Yours sincerely, Layla Haddad") is the main gap; unusual number formats are another. Before a model call, the leak
+  check can only block values the detectors found. The side-by-side view and the outbound log show exactly what was
+  sent, so a miss is visible. An independent audit on 30 Oct 2026 found 13 such gaps; all 13 are fixed and each has a
+  test in `tests/test_privacy_audit.py`.
 - Duly reads text and PDFs with a text layer; scanned images need OCR, which is next.
 - The model provider still receives the redacted text (dates, amounts, company names).
   Next: run Nemotron Nano on the user's own GPU for the reading step, and run Duly inside an NVIDIA OpenShell sandbox

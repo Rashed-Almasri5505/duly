@@ -2,18 +2,24 @@
 
 Detection is plain code that runs locally, so no model ever sees the raw text:
 
-- patterns, with checksums where one exists: IBANs (mod 97), payment cards (Luhn), e-mail addresses,
-  phone numbers, Saudi national ID and iqama numbers (10 digits starting with 1 or 2), vehicle VINs;
-- labelled fields: the value after "Name:", "Policy number:", "Address:", "Serial number:" and similar,
-  also in two-column Markdown tables;
-- the people the user names in their profile (full names, and first and last names on their own);
-- every value already in the vault, wherever it appears again.
+- patterns, with checksums where one exists: IBANs (mod 97), payment cards (Luhn), e-mail addresses, phone numbers
+  (international, 00 and 966 prefixes, Saudi mobiles and landlines), Saudi national ID and iqama numbers (10 digits
+  starting with 1 or 2), vehicle VINs;
+- labelled fields in English and Arabic: the value after "Name:", "Policy No.:", "D.O.B.", "Address" ... on the same
+  line (also without a colon, as text copied from PDF forms reads), on the lines below a label that stands alone,
+  in two-column tables, and in the columns of tables whose header row holds labels;
+- numbers and dates named in sentences: "my passport number is ...", "policy MTR-...", "born on ...", street
+  addresses with a house number, Saudi short addresses;
+- the people the user names in their profile, and every value already in the vault wherever it appears again,
+  including the first or last name alone of any person found, and account numbers grouped differently.
 
-Dates, amounts and company names are kept: the assistant needs them to reason about deadlines.
+Arabic-Indic digits are read as digits. Dates, amounts and company names are kept: the assistant needs them.
 
-The vault maps each placeholder to its value, lives in the user's data folder, and puts the real values back
-only in text shown on the user's screen. Before every outbound call, a leak check scans the whole payload for
-any value in the vault, and the call is blocked if one is found.
+Redaction runs in two passes: the first finds and registers every value, the second replaces every occurrence of
+every known value, so a detail repeated later in the same text is hidden too. The vault maps each placeholder to its
+value, lives in the user's data folder, and puts the real values back only on the user's screen. Before every
+outbound call, a leak check scans the whole payload for any value in the vault and blocks the call if one is found.
+What the detectors miss cannot be blocked: a name with no label that is not in the profile is the main example.
 """
 
 from __future__ import annotations
@@ -39,44 +45,85 @@ KINDS: dict[str, str] = {
     "PLATE": "vehicle plate",
     "VIN": "vehicle identification number",
 }
-NUMERIC_KINDS = ("IBAN", "CARD", "PHONE", "NATIONAL_ID")
+NUMERIC_KINDS = ("IBAN", "CARD", "PHONE", "NATIONAL_ID")      # compared on their digits
+ALNUM_KINDS = ("ACCOUNT", "SERIAL", "PLATE", "VIN")            # compared on letters and digits, any grouping
+ARABIC_DIGITS = str.maketrans("٠١٢٣٤٥٦٧٨٩۰۱۲۳۴۵۶۷۸۹", "01234567890123456789")
 
-# Labels whose value is personal. Matched case-insensitively at the start of a line or table cell.
+# Labels whose value is personal, matched case-insensitively at the start of a line or table cell.
 LABELS: dict[str, tuple[str, ...]] = {
-    "PERSON": ("full name", "name", "customer name", "policyholder", "policy holder", "insured name",
-               "insured", "tenant", "tenant name", "lessee", "landlord", "lessor", "member name",
-               "account holder", "account name", "subscriber", "beneficiary", "driver", "owner", "client",
-               "buyer", "sold to", "bill to", "emergency contact", "cardholder", "card holder"),
-    "NATIONAL_ID": ("national id", "national id number", "id number", "id no", "iqama", "iqama number",
-                    "iqama no", "passport", "passport number", "passport no", "civil id"),
-    "BIRTHDATE": ("date of birth", "dob", "birth date"),
-    "PHONE": ("phone", "mobile", "tel", "telephone", "phone number", "mobile number", "contact number"),
-    "EMAIL": ("email", "e-mail", "email address"),
-    "ADDRESS": ("address", "home address", "billing address", "property address", "premises",
-                "unit address", "delivery address", "shipping address"),
-    "IBAN": ("iban",),
-    "ACCOUNT": ("policy number", "policy no", "contract number", "contract no", "agreement number",
-                "agreement no", "account number", "account no", "customer id", "customer number", "customer no",
-                "member id", "membership number", "membership no", "membership id", "invoice number",
-                "invoice no", "order number", "order no", "reference", "reference number", "reference no",
-                "ref", "lease number", "ejar contract number", "subscription id", "certificate number"),
-    "SERIAL": ("serial number", "serial no", "s/n", "imei", "service tag"),
-    "PLATE": ("plate number", "plate no", "vehicle plate", "plate"),
-    "VIN": ("vin", "chassis number", "chassis no"),
+    "PERSON": ("full name", "name", "customer", "customer name", "policyholder", "policy holder", "insured name",
+               "insured", "insured person", "name of insured", "tenant", "tenant name", "lessee", "landlord",
+               "lessor", "member name", "account holder", "account name", "subscriber", "beneficiary", "driver",
+               "named driver", "owner", "client", "member", "buyer", "sold to", "bill to", "billed to", "ship to",
+               "deliver to", "emergency contact", "cardholder", "card holder", "patient", "student", "employee",
+               "applicant", "guest", "passenger", "spouse", "dependant", "dependent", "next of kin", "attention",
+               "attn", "signed by", "الاسم", "اسم العميل", "اسم المؤمن له", "حامل الوثيقة", "المستأجر", "المؤجر",
+               "اسم المستأجر", "صاحب الحساب"),
+    "NATIONAL_ID": ("national id", "national id number", "id number", "iqama", "iqama number", "passport",
+                    "passport number", "civil id", "residence permit", "رقم الهوية", "الهوية الوطنية",
+                    "رقم الإقامة", "رقم الاقامة", "رقم الجواز", "رقم جواز السفر", "رقم السجل المدني"),
+    "BIRTHDATE": ("date of birth", "dob", "birth date", "birthday", "تاريخ الميلاد"),
+    "PHONE": ("phone", "mobile", "tel", "telephone", "phone number", "mobile number", "contact number", "fax",
+              "landline", "home phone", "work phone", "رقم الجوال", "الجوال", "رقم الهاتف", "الهاتف"),
+    "EMAIL": ("email", "e-mail", "email address", "البريد الإلكتروني", "البريد الالكتروني"),
+    "ADDRESS": ("address", "home address", "billing address", "property address", "premises", "unit address",
+                "delivery address", "shipping address", "national address", "العنوان", "العنوان الوطني",
+                "عنوان السكن"),
+    "IBAN": ("iban", "الآيبان", "رقم الآيبان", "آيبان", "ايبان"),
+    "ACCOUNT": ("policy number", "contract number", "agreement number", "account number", "customer id",
+                "customer number", "member id", "membership number", "membership id", "invoice number",
+                "order number", "reference", "reference number", "ref", "lease number", "ejar contract number",
+                "subscription id", "certificate number", "claim number", "booking number", "رقم الحساب",
+                "رقم الوثيقة", "رقم العقد", "رقم العضوية", "رقم الفاتورة"),
+    "SERIAL": ("serial number", "s/n", "imei", "service tag"),
+    "PLATE": ("plate number", "vehicle plate", "plate", "registration number", "رقم اللوحة", "اللوحة"),
+    "VIN": ("vin", "chassis number", "رقم الهيكل"),
+}
+# Nouns that name a number when followed by "No.", "Nr.", "Number" or "#": "Policy No.: ...", "Tel. No. ...".
+NUMBER_NOUNS: dict[str, str] = {
+    **{n: "ACCOUNT" for n in ("policy", "contract", "agreement", "account", "acct", "invoice", "order", "member",
+                              "membership", "customer", "client", "reference", "ref", "lease", "ejar contract",
+                              "ejar", "subscription", "certificate", "claim", "booking", "ticket", "receipt",
+                              "transaction", "file", "case")},
+    **{n: "NATIONAL_ID" for n in ("passport", "id", "national id", "iqama", "civil id", "residence permit",
+                                  "border")},
+    **{n: "PHONE" for n in ("tel", "phone", "telephone", "mobile", "contact", "fax")},
+    **{n: "PLATE" for n in ("plate", "vehicle plate", "registration")},
+    **{n: "SERIAL" for n in ("serial", "imei")},
+    **{n: "VIN" for n in ("chassis", "vin")},
 }
 _LABEL_TO_KIND = {label: kind for kind, labels in LABELS.items() for label in labels}
-_LABEL_ALT = "|".join(sorted((re.escape(l) for l in _LABEL_TO_KIND), key=len, reverse=True))
-# "Label: value" inside one line or table cell; list markers and ** around the label are allowed.
-_LABEL_VALUE_RE = re.compile(rf"^[ \t>*\-•]*\**[ \t]*({_LABEL_ALT})[ \t]*\**[ \t]*(?:\([^)]*\))?[ \t]*[:：#][ \t]*\**"
-                             rf"[ \t]*(.+?)[ \t]*\**[ \t]*$", re.IGNORECASE)
-_LABEL_ONLY_RE = re.compile(rf"^[ \t*]*({_LABEL_ALT})[ \t*]*$", re.IGNORECASE)
+
+
+def _phrase_re(phrase: str) -> str:
+    if phrase == "dob":
+        return r"d\.?[ \t]?o\.?[ \t]?b\.?"
+    return r"\.?[ \t]+".join(re.escape(w) for w in phrase.split()) + r"\.?"
+
+
+_PHRASES = sorted(set(_LABEL_TO_KIND) | set(NUMBER_NOUNS), key=len, reverse=True)
+_PHRASE_ALT = "|".join(f"(?:{_phrase_re(p)})" for p in _PHRASES)
+_SUFFIX = r"[ \t]*(?:no|nr|num|number)\b\.?|[ \t]*#"
+# A label at the start of a line or cell, its "No." suffix, a parenthesis, a separator, and the value.
+_LINE_RE = re.compile(
+    rf"^(?P<pre>[ \t>*\-•]*\**[ \t]*)(?P<label>{_PHRASE_ALT})(?![A-Za-z؀-ۿ])(?P<suffix>{_SUFFIX})?"
+    rf"(?P<paren>[ \t]*\([^)\n]*\))?(?P<sep>[ \t]*\**[ \t]*[:：=][ \t]*\**[ \t]*|[ \t]+)?(?P<value>.*?)[ \t]*\**[ \t]*$",
+    re.IGNORECASE)
 
 EMAIL_RE = re.compile(r"(?<![\w.+-])[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}(?![\w-])")
-PHONE_INTL_RE = re.compile(r"(?<![\w+])\+\d{1,3}(?:[ \-.]?\(?\d{1,4}\)?){2,6}(?!\w)")
-PHONE_SA_RE = re.compile(r"(?<![\d+])05\d(?:[ \-]?\d){7}(?!\d)")
-IBAN_RE = re.compile(r"(?<![A-Z0-9])[A-Z]{2}\d{2}(?:[ ]?[A-Z0-9]{4}){2,7}(?:[ ]?[A-Z0-9]{1,4})?(?![A-Z0-9])")
-CARD_RE = re.compile(r"(?<![\d-])(?:\d[ \-]?){12,18}\d(?![\d-])")
-NATIONAL_ID_RE = re.compile(r"(?<![\d+\-/.])[12]\d{9}(?![\d\-/.])")
+PHONE_RES = [
+    re.compile(r"(?<![\w+])\+\d{1,3}(?:[ \-.]?\(?\d{1,4}\)?){2,6}(?!\w)"),            # +966 50 555 0134
+    re.compile(r"(?<![\d+])00\d{1,3}(?:[ \-.]?\(?\d{1,4}\)?){2,6}(?!\d)"),            # 00966 50 ..., 0044 20 ...
+    re.compile(r"(?<![\d+])966[ \-.]?(?:5\d|1[1-7])(?:[ \-.]?\d){7}(?!\d)"),         # 966501234567
+    re.compile(r"(?<![\d+])\(?05\d\)?(?:[ \-.]?\d){7}(?!\d)"),                       # 050 555 0134, (050) 555 0134
+    re.compile(r"(?<![\d+])\(?01[1-7]\)?(?:[ \-.]?\d){7}(?!\d)"),                    # 013 860 1234 (landline)
+    re.compile(r"(?<![\d+.])5\d[ \-.]\d{3}[ \-.]\d{4}(?!\d)"),                       # 50 123 4567
+    re.compile(r"(?<![\d+])\(\d{3}\)[ \-.]?\d{3}[ \-.]\d{4}(?!\d)"),                 # (415) 555-0123
+]
+IBAN_RE = re.compile(r"(?<![A-Za-z0-9])[A-Za-z]{2}[ ]?\d{2}(?:[ \-]?[A-Za-z0-9]{4}){2,7}(?:[ \-]?[A-Za-z0-9]{1,4})?"
+                     r"(?![A-Za-z0-9])")
+CARD_RE = re.compile(r"(?<![\d\-])(?<!\d\.)(?:\d[ \-.]?){12,18}\d(?![\d\-]|\.\d)")
+NATIONAL_ID_RE = re.compile(r"(?<![\d+\-/])(?<!\d\.)[12]\d{9}(?![\d\-/]|\.\d)")
 VIN_RE = re.compile(r"(?<![A-Z0-9])[A-HJ-NPR-Z0-9]{17}(?![A-Z0-9])")
 DEAR_RE = re.compile(r"\bDear[ \t]+(?:(?:Mr|Mrs|Ms|Miss|Dr|Eng)\.?[ \t]+)?([A-Z][a-zA-Z'\-]+(?:[ \t]+[A-Z][a-zA-Z'\-]+){0,3})")
 DEAR_GENERIC = {"customer", "customers", "member", "members", "sir", "madam", "valued", "client", "tenant",
@@ -84,12 +131,39 @@ DEAR_GENERIC = {"customer", "customers", "member", "members", "sir", "madam", "v
                 "support", "service", "services", "care", "department", "office", "manager", "desk", "center",
                 "centre", "helpdesk", "sales", "billing", "claims", "membership", "memberships", "hiring",
                 "landlord", "owner", "applicant", "recipient", "whom", "partner", "partners"}
-PLACEHOLDER_RE = re.compile(rf"\[?\b({'|'.join(KINDS)})[_ ](\d+)\b\]?")
+_MONTH = (r"(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sep(?:t(?:ember)?)?|"
+          r"oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\.?")
+_DATE = (rf"\d{{1,2}}[/.\-]\d{{1,2}}[/.\-]\d{{2,4}}|\d{{4}}[/.\-]\d{{1,2}}[/.\-]\d{{1,2}}|"
+         rf"\d{{1,2}}(?:st|nd|rd|th)?[ \t]+(?:of[ \t]+)?{_MONTH},?[ \t]+\d{{4}}|{_MONTH}[ \t]+\d{{1,2}}(?:st|nd|rd|th)?,?[ \t]+\d{{4}}")
+# Numbers and dates named in a sentence.
+CODE_CONTEXT_RE = re.compile(
+    r"\b(?P<noun>passport|policy|account|acct|contract|membership|member|iqama|national id|id|reference|ref|serial|"
+    r"chassis|vin|invoice|claim|booking|order|customer|subscription|ticket|certificate|lease|ejar)\b"
+    r"(?:[ \t]+(?:number|no\.?|num\.?|nr\.?)|[ \t]*#)?(?:[ \t]+(?:is|was|=)|[ \t]*[:=])?[ \t]*"
+    r"(?P<code>(?=[A-Za-z0-9\-/]*\d)[A-Za-z0-9][A-Za-z0-9\-/]{2,}[A-Za-z0-9])", re.IGNORECASE)
+PLATE_CONTEXT_RE = re.compile(
+    r"\bplate\b(?:[ \t]+(?:number|no\.?))?(?:[ \t]+(?:is|was))?[ \t]*[:#]?[ \t]*"
+    r"(?P<code>[A-Za-z]{1,3}[ \t]?\d{1,4}|\d{1,4}[ \t]?[A-Za-z]{1,3})\b", re.IGNORECASE)
+BIRTH_CONTEXT_RE = re.compile(
+    rf"\b(?:born|date[ \t]+of[ \t]+birth|birth[ \t]?date|birthday|d\.?o\.?b\.?)(?:[ \t]+(?:on|in|is|was))?[ \t]*:?[ \t]*"
+    rf"(?P<date>{_DATE})", re.IGNORECASE)
+STREET_RE = re.compile(
+    r"\b\d{1,5}[ \t]+(?:[A-Z][\w'’\-]*[ \t]+){0,4}(?:Road|Rd|Street|St|Avenue|Ave|Boulevard|Blvd|Lane|Ln|Drive|Dr|"
+    r"Way|Highway|Hwy|Square|Sq)\b\.?(?:,[ \t]*(?:[A-Z][\w'’\-]*[ \t]?){1,4})*(?:[ \t]*\d{5})?")
+SHORT_ADDRESS_RE = re.compile(r"\b[A-Z]{4}\d{4}\b")          # Saudi National Address short code
+
+PLACEHOLDER_RE = re.compile(rf"\[?\b({'|'.join(KINDS)})[_ ](\d+)\b\]?")      # tolerant, for restoring
+_STRICT_PLACEHOLDER_RE = re.compile(rf"\[({'|'.join(KINDS)})_(\d+)\]")       # what redaction leaves alone
 # A value under a name label that is a company, not a person: kept, because companies are not personal data
 # and the assistant needs them (whom to write to, whose procedure to look up).
 COMPANY_RE = re.compile(r"\b(co|company|corp|corporation|inc|llc|ltd|limited|est|establishment|group|holding|bank|"
                         r"insurance|real estate|properties|trading|motors|electronics|club|fitness|telecom|"
                         r"services|agency|hospital|clinic|school|university)\b\.?", re.IGNORECASE)
+_NAME_PARTICLES = {"al", "el", "bin", "bint", "ibn", "abu", "abd", "de", "da", "van", "von", "la", "le", "mr", "mrs",
+                   "ms", "miss", "dr", "eng", "prof", "sir", "the", "and", "of"}
+_NAME_WORD = r"(?:[A-Z][a-zA-Z'’\-]+|al|el|bin|bint|ibn|abu|abd|de|da|van|von|Al-[A-Z][a-z]+)"
+_NAME_SHAPE_RE = re.compile(rf"^(?:(?:Mr|Mrs|Ms|Miss|Dr|Eng)\.?[ \t]+)?{_NAME_WORD}(?:[ \t]+{_NAME_WORD}){{1,4}}$")
+_ARABIC_NAME_RE = re.compile(r"^[؀-ۿ]+(?:[ \t]+[؀-ۿ]+){1,4}$")
 _TRAILING = " \t.,;:)]}\"'*"
 _KEEP = "KEEP"
 
@@ -99,20 +173,27 @@ class PrivacyError(RuntimeError):
 
 
 def _digits(text: str) -> str:
-    return re.sub(r"\D", "", text)
+    return re.sub(r"\D", "", text.translate(ARABIC_DIGITS))
+
+
+def _alnum(text: str) -> str:
+    return re.sub(r"[^0-9a-z]", "", text.translate(ARABIC_DIGITS).lower())
 
 
 def _number_key(kind: str, value: str) -> str:
-    """Digits that identify a number; Saudi phone numbers match with or without +966 or the leading 0."""
+    """What identifies a number: Saudi phone numbers match with or without +966, 00966 or the leading 0;
+    account, serial and plate numbers match on their letters and digits, however they are grouped."""
+    if kind in ALNUM_KINDS:
+        return _alnum(value)
     digits = _digits(value)
     if kind == "PHONE":
-        digits = digits[3:] if digits.startswith("966") else digits
+        digits = digits[5:] if digits.startswith("00966") else digits[3:] if digits.startswith("966") else digits
         digits = digits.lstrip("0")
     return digits
 
 
 def iban_ok(candidate: str) -> bool:
-    s = re.sub(r"\s", "", candidate).upper()
+    s = re.sub(r"[\s\-]", "", candidate).upper()
     if not 15 <= len(s) <= 34 or not re.fullmatch(r"[A-Z]{2}\d{2}[A-Z0-9]+", s):
         return False
     number = "".join(str(int(c, 36)) for c in s[4:] + s[:4])
@@ -138,49 +219,204 @@ class Span:
     end: int
     kind: str
     value: str
-    priority: int   # existing placeholders > vault values > labelled fields > checksummed patterns > others
+    priority: int   # placeholders > e-mails > vault values > labelled fields > checksummed patterns > others
+    placeholder: str | None = None      # for vault values: the entry they belong to
+
+
+def _norm_label(text: str) -> str:
+    norm = " ".join(re.sub(r"\.", " ", text.lower()).split())
+    return "dob" if re.fullmatch(r"d ?o ?b", norm) else norm
 
 
 def _clean_value(value: str) -> str:
+    value = re.split(r"\t|[ ]{2,}(?=[^\s:：]{1,30}(?:[ ][^\s:：]{1,30}){0,3}[ ]?[:：])", value, maxsplit=1)[0]
     value = re.sub(r"\s*\((?:policyholder|tenant|member|owner|customer|insured|landlord)\)\s*$", "", value,
                    flags=re.IGNORECASE)
     return value.strip(_TRAILING)
 
 
-def _personal(kind: str, value: str) -> bool:
-    """A labelled value to hide: not empty, not already a placeholder, not a company under a name label."""
-    if len(value) < 2 or PLACEHOLDER_RE.fullmatch(value):
+def _name_like(value: str) -> bool:
+    return bool(_NAME_SHAPE_RE.match(value) or _ARABIC_NAME_RE.match(value)) and len(value) <= 60
+
+
+def _too_short(kind: str, value: str) -> bool:
+    """A number too short to identify anyone ("Reference: 2026"): hiding it would hide every date with 2026 in it."""
+    if kind not in NUMERIC_KINDS + ALNUM_KINDS:
         return False
-    return not (kind == "PERSON" and COMPANY_RE.search(value))
+    key = _alnum(value)
+    return len(key) < 5 and not (len(key) >= 4 and re.search(r"[a-z]", key) and re.search(r"\d", key))
+
+
+def _plausible(kind: str, value: str, strict: bool) -> bool:
+    """A value worth hiding. Strict applies where there is no colon (PDF forms, the line below a label, table
+    columns): there it must look like its kind, so a heading such as "Address changes" is left alone."""
+    if len(value) < 2 or _STRICT_PLACEHOLDER_RE.fullmatch(value) or set(value) <= set("-–—: |"):
+        return False
+    if kind == "PERSON" and COMPANY_RE.search(value):
+        return False
+    if _too_short(kind, value):
+        return False
+    if not strict:
+        return True
+    if ":" in value or "：" in value:                 # another label follows: this is not a value
+        return False
+    has_digit = any(c.isdigit() for c in value.translate(ARABIC_DIGITS))
+    if kind == "PERSON":
+        return _name_like(value)
+    if kind == "EMAIL":
+        return "@" in value
+    if kind == "ADDRESS":
+        return has_digit and len(value) <= 160
+    return has_digit and len(value) <= 40 and len(value.split()) <= 4
+
+
+def _label_match(cell: str) -> tuple[str, str, re.Match[str]] | None:
+    """(kind, mode, match) for a cell that starts with a label. Modes: colon, number (a "No." suffix, no colon),
+    form (whitespace only), alone (nothing after the label)."""
+    m = _LINE_RE.match(cell)
+    if not m:
+        return None
+    label, suffix = _norm_label(m.group("label")), bool(m.group("suffix"))
+    sep, value = m.group("sep") or "", m.group("value")
+    if suffix and label in NUMBER_NOUNS:
+        kind = NUMBER_NOUNS[label]
+    elif label in _LABEL_TO_KIND:
+        kind = _LABEL_TO_KIND[label]
+    else:
+        return None
+    if not value.strip():
+        return kind, "alone", m
+    if re.search(r"[:：=]", sep):
+        return kind, "colon", m
+    if suffix:
+        return kind, "number", m
+    if sep:
+        return kind, "form", m
+    return None
+
+
+def _lines(text: str) -> list[tuple[int, str]]:
+    out, pos = [], 0
+    for line in text.splitlines(keepends=True):
+        out.append((pos, line.rstrip("\r\n")))
+        pos += len(line)
+    return out
+
+
+def _cells(offset: int, line: str) -> list[tuple[int, str]]:
+    cells, cursor = [], 0
+    for part in re.split(r"(\||\t)", line):
+        if part not in ("|", "\t"):
+            cells.append((offset + cursor, part))
+        cursor += len(part)
+    return cells
+
+
+def _span_in(offset: int, cell: str, value: str, start_at: int, kind: str, priority: int = 3) -> Span:
+    idx = cell.find(value, start_at)
+    start = offset + (idx if idx >= 0 else start_at)
+    return Span(start, start + len(value), kind, value, priority)
 
 
 def _label_spans(text: str) -> list[Span]:
     spans: list[Span] = []
-    pos = 0
-    for line in text.splitlines(keepends=True):
-        cells: list[tuple[int, str]] = []
-        cursor = 0
-        for part in re.split(r"(\||\t)", line):
-            if part not in ("|", "\t"):
-                cells.append((pos + cursor, part.rstrip("\r\n")))
-            cursor += len(part)
-        for i, (offset, cell) in enumerate(cells):
-            m = _LABEL_VALUE_RE.match(cell)
-            if m:
-                kind, value = _LABEL_TO_KIND[m.group(1).lower()], _clean_value(m.group(2))
-                if _personal(kind, value):
-                    idx = cell.find(value, m.start(2))
-                    start = offset + (idx if idx >= 0 else m.start(2))
-                    spans.append(Span(start, start + len(value), kind, value, 3))
+    lines = _lines(text)
+    for li, (offset, line) in enumerate(lines):
+        cells = _cells(offset, line)
+        for i, (c_off, cell) in enumerate(cells):
+            found = _label_match(cell)
+            if found is None:
                 continue
-            m = _LABEL_ONLY_RE.match(cell)      # two-column table: | Name | Sami Nasser |
-            if m and i + 1 < len(cells):
-                nxt_offset, nxt = cells[i + 1]
-                kind, value = _LABEL_TO_KIND[m.group(1).lower()], _clean_value(nxt)
-                if _personal(kind, value) and not _LABEL_ONLY_RE.match(nxt) and not set(value) <= set("-: "):
-                    start = nxt_offset + nxt.find(value)
-                    spans.append(Span(start, start + len(value), kind, value, 3))
-        pos += len(line)
+            kind, mode, m = found
+            if mode != "alone":
+                value = _clean_value(m.group("value"))
+                if _plausible(kind, value, strict=mode in ("form", "number")):
+                    spans.append(_span_in(c_off, cell, value, m.start("value"), kind))
+                continue
+            if i + 1 < len(cells):                     # two-column table: | Name | Sami Nasser |
+                n_off, nxt = cells[i + 1]
+                value = _clean_value(nxt)
+                if _label_match(nxt) is None and _plausible(kind, value, strict=False):
+                    spans.append(_span_in(n_off, nxt, value, 0, kind))
+            elif len(cells) == 1:                      # the label stands alone: its value is on the lines below
+                spans.extend(_below(lines, li, kind))
+    spans.extend(_table_column_spans(lines))
+    return spans
+
+
+def _below(lines: list[tuple[int, str]], li: int, kind: str) -> list[Span]:
+    """Values on the lines under a label that stands alone ("Bill To:" then a name and an address)."""
+    block: list[tuple[int, str]] = []
+    for offset, line in lines[li + 1: li + 6]:
+        if not line.strip() or _label_match(line) is not None or re.search(r"[:：]\s*\S", line):
+            break
+        block.append((offset, line))
+    if not block:
+        return []
+    spans: list[Span] = []
+
+    def whole(rows: list[tuple[int, str]], k: str) -> None:
+        first_off, first = rows[0]
+        last_off, last = rows[-1]
+        start = first_off + len(first) - len(first.lstrip())
+        value_end = last_off + len(last.rstrip(_TRAILING + " "))
+        if value_end > start:
+            spans.append(Span(start, value_end, k, "", 3))
+
+    if kind == "PERSON":
+        name = block[0][1].strip(_TRAILING)
+        if _plausible("PERSON", name, strict=True) or (not any(c.isdigit() for c in name) and len(name.split()) <= 5):
+            whole(block[:1], "PERSON")
+            rest = block[1:4]
+            if rest and any(any(c.isdigit() for c in r[1]) for r in rest):
+                whole(rest, "ADDRESS")
+    elif kind == "ADDRESS":
+        whole(block[:4], "ADDRESS")
+    else:
+        value = block[0][1].strip(_TRAILING)
+        if _plausible(kind, value, strict=True):
+            whole(block[:1], kind)
+    return spans
+
+
+def _table_column_spans(lines: list[tuple[int, str]]) -> list[Span]:
+    """Tables whose header row holds labels: each header's kind applies to the cells in its column."""
+    spans: list[Span] = []
+    i = 0
+    while i < len(lines):
+        offset, line = lines[i]
+        sep = "|" if line.strip().startswith("|") else "\t" if "\t" in line else None
+        if sep is None:
+            i += 1
+            continue
+        block = [lines[i]]
+        j = i + 1
+        while j < len(lines) and (lines[j][1].strip().startswith("|") if sep == "|" else "\t" in lines[j][1]):
+            block.append(lines[j])
+            j += 1
+        i = j
+        if len(block) < 2:
+            continue
+        header = _cells(*block[0])
+        kinds: dict[int, str] = {}
+        for k, (_, cell) in enumerate(header):
+            found = _label_match(cell)
+            if found is not None and found[1] == "alone":
+                kinds[k] = found[0]
+        if not kinds:
+            continue
+        for row_off, row in block[1:]:
+            cells = _cells(row_off, row)
+            if all(set(c.strip()) <= set("-: ") for _, c in cells):
+                continue                                   # the |---|---| separator row
+            for k, kind in kinds.items():
+                if k < len(cells):
+                    c_off, cell = cells[k]
+                    value = _clean_value(cell)
+                    if _plausible(kind, value, strict=True) or (kind not in ("PERSON", "ADDRESS", "EMAIL")
+                                                                 and _plausible(kind, value, strict=False)
+                                                                 and any(ch.isalnum() for ch in value)):
+                        spans.append(_span_in(c_off, cell, value, 0, kind))
     return spans
 
 
@@ -188,14 +424,18 @@ def _pattern_spans(text: str) -> list[Span]:
     spans: list[Span] = []
     for m in EMAIL_RE.finditer(text):      # above vault values, so a name inside an address stays one e-mail
         spans.append(Span(m.start(), m.end(), "EMAIL", m.group(), 5))
-    for m in IBAN_RE.finditer(text):
-        if iban_ok(m.group()):
-            spans.append(Span(m.start(), m.end(), "IBAN", m.group(), 2))
+    for m in IBAN_RE.finditer(text):       # the longest start of the match that passes the checksum: a match may
+        cand = m.group()                   # run on into the next word ("... 2180 today")
+        for end in range(len(cand), 14, -1):
+            piece = cand[:end]
+            if piece[-1].isalnum() and iban_ok(piece):
+                spans.append(Span(m.start(), m.start() + end, "IBAN", piece, 2))
+                break
     for m in CARD_RE.finditer(text):
-        value = m.group().strip(" -")
+        value = m.group().rstrip(" -.")
         if luhn_ok(value):
             spans.append(Span(m.start(), m.start() + len(value), "CARD", value, 2))
-    for rx in (PHONE_INTL_RE, PHONE_SA_RE):
+    for rx in PHONE_RES:
         for m in rx.finditer(text):
             value = m.group().rstrip(" -.")
             if 8 <= len(_digits(value)) <= 15:
@@ -213,15 +453,50 @@ def _pattern_spans(text: str) -> list[Span]:
     return spans
 
 
-def _literal_spans(text: str, literals: list[tuple[str, str]]) -> list[Span]:
-    """Every occurrence of known values (vault entries, profile names), whole words only."""
+def _context_spans(text: str) -> list[Span]:
+    """Numbers, dates and addresses named in a sentence ("my passport number is N12345678")."""
     spans: list[Span] = []
-    for value, kind in literals:
-        if len(value) < 3:
+    for m in CODE_CONTEXT_RE.finditer(text):
+        code, noun = m.group("code"), m.group("noun").lower()
+        letters, digits = sum(c.isalpha() for c in code), sum(c.isdigit() for c in code)
+        if len(code) < 5 and not (letters and digits and len(code) >= 4):
             continue
-        pattern = re.escape(value).replace(r"\ ", r"\s+")
-        for m in re.finditer(rf"(?<!\w){pattern}(?!\w)", text, flags=re.IGNORECASE):
-            spans.append(Span(m.start(), m.end(), kind, value, 4))
+        if re.fullmatch(r"(19|20)\d{2}", code) or re.fullmatch(_DATE, code, flags=re.IGNORECASE):
+            continue
+        kind = ("NATIONAL_ID" if noun in ("passport", "iqama", "national id", "id") else "SERIAL" if noun == "serial"
+                else "VIN" if noun in ("chassis", "vin") else "ACCOUNT")
+        spans.append(Span(m.start("code"), m.end("code"), kind, code, 2))
+    for m in PLATE_CONTEXT_RE.finditer(text):
+        spans.append(Span(m.start("code"), m.end("code"), "PLATE", m.group("code"), 2))
+    for m in BIRTH_CONTEXT_RE.finditer(text):
+        spans.append(Span(m.start("date"), m.end("date"), "BIRTHDATE", m.group("date"), 2))
+    for rx in (STREET_RE, SHORT_ADDRESS_RE):
+        for m in rx.finditer(text):
+            spans.append(Span(m.start(), m.end(), "ADDRESS", m.group().rstrip(" ,"), 2))
+    return spans
+
+
+def _flexible(value: str) -> str:
+    """A pattern for a number written with any grouping: '608010167519' also finds '6080 1016 7519'."""
+    return r"[\s\-./]?".join(re.escape(c) for c in _alnum(value))
+
+
+def _literal_spans(text: str, literals: list[tuple[str, str, bool, str]]) -> list[Span]:
+    """Every occurrence of known values: whole words; name parts case-sensitive; numbers in any grouping."""
+    spans: list[Span] = []
+    det = text.translate(ARABIC_DIGITS)
+    for value, kind, part, placeholder in literals:
+        if len(value) < 3 or _too_short(kind, value):
+            continue
+        if kind in ALNUM_KINDS + NUMERIC_KINDS and len(_alnum(value)) >= 6:
+            pattern, flags = _flexible(value), re.IGNORECASE
+            if kind == "PHONE":
+                pattern = r"(?:\+|\()?" + pattern + r"\)?"
+        else:
+            pattern = re.escape(value).replace(r"\ ", r"\s+")
+            flags = 0 if part else re.IGNORECASE
+        for m in re.finditer(rf"(?<![\w]){pattern}(?![\w])", det, flags=flags):
+            spans.append(Span(m.start(), m.end(), kind, value, 4, placeholder))
     return spans
 
 
@@ -229,14 +504,19 @@ def _resolve(spans: list[Span]) -> list[Span]:
     """Non-overlapping spans: higher priority first, then longer."""
     chosen: list[Span] = []
     for s in sorted(spans, key=lambda s: (-s.priority, -(s.end - s.start), s.start)):
-        if all(s.end <= c.start or s.start >= c.end for c in chosen):
+        if s.end > s.start and all(s.end <= c.start or s.start >= c.end for c in chosen):
             chosen.append(s)
     return sorted(chosen, key=lambda s: s.start)
 
 
 def _digit_runs(text: str) -> list[str]:
     """Digits of each number in the text, with spaces, dashes and dots inside one number allowed."""
-    return [_digits(m.group()) for m in re.finditer(r"\d(?:[ \-.]?\d)*", text)]
+    return [_digits(m.group()) for m in re.finditer(r"\d(?:[ \-.]?\d)*", text.translate(ARABIC_DIGITS))]
+
+
+def _alnum_runs(text: str) -> list[str]:
+    return [_alnum(m.group()) for m in re.finditer(r"[A-Za-z0-9](?:[\s\-./]?[A-Za-z0-9])*",
+                                                    text.translate(ARABIC_DIGITS))]
 
 
 @dataclass
@@ -244,8 +524,9 @@ class VaultEntry:
     placeholder: str
     kind: str
     value: str
-    aliases: list[str] = field(default_factory=list)
+    aliases: list[str] = field(default_factory=list)     # other spellings of the value (any case)
     source: str = ""
+    parts: list[str] = field(default_factory=list)       # a person's first or last name alone (case-sensitive)
 
     def strings(self) -> list[str]:
         return [self.value, *self.aliases]
@@ -276,13 +557,13 @@ class Vault:
             self.path.write_text(json.dumps(data, indent=1, ensure_ascii=False), encoding="utf-8")
 
     def _find(self, kind: str, value: str) -> VaultEntry | None:
-        numeric = kind in NUMERIC_KINDS
-        key = _number_key(kind, value) if numeric else " ".join(value.lower().split())
+        keyed = kind in NUMERIC_KINDS + ALNUM_KINDS
+        key = _number_key(kind, value) if keyed else " ".join(value.lower().split())
         for e in self.entries.values():
-            if numeric != (e.kind in NUMERIC_KINDS) or (numeric and e.kind != kind):
+            if keyed != (e.kind in NUMERIC_KINDS + ALNUM_KINDS) or (keyed and e.kind != kind):
                 continue
             for s in e.strings():
-                other = _number_key(e.kind, s) if numeric else " ".join(s.lower().split())
+                other = _number_key(e.kind, s) if keyed else " ".join(s.lower().split())
                 if other and other == key:
                     return e
         return None
@@ -298,7 +579,17 @@ class Vault:
             self.counters[kind] = n
             placeholder = f"[{kind}_{n}]"
             self.entries[placeholder] = VaultEntry(placeholder, kind, value, [], source)
+            if kind == "PERSON":
+                self._add_parts(self.entries[placeholder])
             return placeholder
+
+    def _add_parts(self, entry: VaultEntry) -> None:
+        """First and last names of a person, so "Mr. Haddad" is hidden after "Layla Haddad" was."""
+        for word in re.split(r"[\s,]+", entry.value):
+            word = word.strip(".'’")
+            if (len(word) >= 3 and word.lower() not in _NAME_PARTICLES and word not in entry.parts
+                    and word not in entry.aliases and (word[0].isupper() or "؀" <= word[0] <= "ۿ")):
+                entry.parts.append(word)
 
     def lookup(self, kind: str, value: str) -> str | None:
         """The placeholder of a value already in the vault, without adding anything."""
@@ -307,7 +598,8 @@ class Vault:
             return found.placeholder if found else None
 
     def add_known_person(self, full_name: str) -> str:
-        """A person the user names in their profile: the full name and each part map to one placeholder."""
+        """A person the user names in their profile: the full name and each part map to one placeholder, in any
+        case (the user may type their own name in lower case)."""
         full_name = " ".join(full_name.split())
         with self._lock:
             placeholder = self.placeholder_for("PERSON", full_name, source="your profile")
@@ -315,26 +607,36 @@ class Vault:
             for part in full_name.split():
                 if len(part) >= 3 and part not in entry.strings():
                     entry.aliases.append(part)
+            entry.parts = [p for p in entry.parts if p not in entry.aliases]
             if full_name not in self.known_people:
                 self.known_people.append(full_name)
             return placeholder
 
+    def _literals(self) -> list[tuple[str, str, bool, str]]:
+        return ([(s, e.kind, False, e.placeholder) for e in self.entries.values() for s in e.strings()]
+                + [(p, e.kind, True, e.placeholder) for e in self.entries.values() for p in e.parts])
+
+    def _spans(self, text: str) -> list[Span]:
+        det = text.translate(ARABIC_DIGITS)          # same length, so offsets carry over to the original
+        keep = [Span(m.start(), m.end(), _KEEP, m.group(), 9) for m in _STRICT_PLACEHOLDER_RE.finditer(text)]
+        found = _label_spans(det) + _pattern_spans(det) + _context_spans(det)
+        return _resolve(keep + _literal_spans(text, self._literals()) + found)
+
     def redact(self, text: str, source: str = "") -> tuple[str, list[VaultEntry]]:
         """Replace every personal detail with its placeholder. Returns the safe text and the entries used."""
         with self._lock:
-            keep = [Span(m.start(), m.end(), _KEEP, m.group(), 9) for m in PLACEHOLDER_RE.finditer(text)]
-            literals = [(s, e.kind) for e in self.entries.values() for s in e.strings()]
-            spans = _resolve(keep + _literal_spans(text, literals) + _label_spans(text) + _pattern_spans(text))
+            for s in self._spans(text):                # pass 1: register every value found
+                if s.kind != _KEEP and s.priority != 4:
+                    self.placeholder_for(s.kind, text[s.start:s.end].strip(), source)
             out: list[str] = []
             used: dict[str, VaultEntry] = {}
             cursor = 0
-            for s in spans:
+            for s in self._spans(text):                # pass 2: replace every occurrence of every known value
                 out.append(text[cursor:s.start])
                 if s.kind == _KEEP:
                     out.append(s.value)
                 else:
-                    value = s.value if s.priority == 4 else text[s.start:s.end]
-                    placeholder = self.placeholder_for(s.kind, value, source)
+                    placeholder = s.placeholder or self.placeholder_for(s.kind, text[s.start:s.end].strip(), source)
                     out.append(placeholder)
                     used[placeholder] = self.entries[placeholder]
                 cursor = s.end
@@ -345,12 +647,11 @@ class Vault:
         """Replace only values already in the vault (for web results and tool output: public text is not
         scanned for new details, so a company's support number is not hidden)."""
         with self._lock:
-            literals = [(s, e.kind) for e in self.entries.values() for s in e.strings()]
-            spans = _resolve(_literal_spans(text, literals))
+            spans = _resolve(_literal_spans(text, self._literals()))
             out, cursor = [], 0
             for s in spans:
                 out.append(text[cursor:s.start])
-                out.append(self.placeholder_for(s.kind, s.value))
+                out.append(s.placeholder or self.placeholder_for(s.kind, s.value))
                 cursor = s.end
             out.append(text[cursor:])
             return "".join(out)
@@ -365,19 +666,27 @@ class Vault:
     def leaks(self, payload: str) -> list[str]:
         """Placeholders whose real value appears in the payload."""
         found: list[str] = []
-        squashed = " ".join(payload.split()).lower()
-        runs = _digit_runs(payload)
+        squashed = " ".join(payload.split())
+        lowered = squashed.lower()
+        digit_runs, alnum_runs = _digit_runs(payload), _alnum_runs(payload)
         for e in self.entries.values():
+            hit = False
             for s in e.strings():
-                if len(s) < 3:
+                if len(s) < 3 or _too_short(e.kind, s):
                     continue
-                if e.kind in NUMERIC_KINDS and len(_number_key(e.kind, s)) >= 7:
-                    hit = any(_number_key(e.kind, s) in run for run in runs)
+                key = _number_key(e.kind, s)
+                if e.kind in NUMERIC_KINDS and len(key) >= 7:
+                    hit = any(key in run for run in digit_runs)
+                elif e.kind in ALNUM_KINDS and len(key) >= 5:
+                    hit = any(key in run for run in alnum_runs)
                 else:
-                    hit = re.search(rf"(?<!\w){re.escape(' '.join(s.lower().split()))}(?!\w)", squashed) is not None
+                    hit = re.search(rf"(?<!\w){re.escape(' '.join(s.lower().split()))}(?!\w)", lowered) is not None
                 if hit:
-                    found.append(e.placeholder)
                     break
+            if not hit:
+                hit = any(re.search(rf"(?<!\w){re.escape(p)}(?!\w)", squashed) for p in e.parts if len(p) >= 3)
+            if hit:
+                found.append(e.placeholder)
         return found
 
     def check_outbound(self, payload: Any, destination: str) -> None:

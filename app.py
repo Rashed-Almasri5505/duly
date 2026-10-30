@@ -175,12 +175,12 @@ def add_uploaded(file) -> None:
         st.sidebar.error("No text found in that file. Duly reads text and PDF files with a text layer; scanned "
                          "images need OCR, which is not built in yet.")
         return
-    title = re.sub(r"[_\-]+", " ", Path(file.name).stem).strip().capitalize() or "Document"
-    doc = store.add_document(title, text, filename=file.name, max_chars=int(CFG["reader"]["max_document_chars"]))
+    # No title from the file name: it often holds the owner's name. The store titles it from its first line.
+    doc = store.add_document("", text, filename=file.name, max_chars=int(CFG["reader"]["max_document_chars"]))
     ok, reason = live_status()
     if ok:
         try:
-            with st.spinner(f"Nemotron is reading “{title}” (it sees only the redacted copy)…"):
+            with st.spinner(f"Nemotron is reading “{R(doc.title)}” (it sees only the redacted copy)…"):
                 read_document(store, llm, doc, today, CFG)
         except (LLMError, BudgetExceeded, PrivacyError, ValueError) as exc:
             doc.read_status, doc.read_note = "failed", f"could not read it: {exc}"
@@ -195,7 +195,7 @@ with st.sidebar:
     if docs:
         for d in docs:
             n = sum(d.hidden.values())
-            st.markdown(f"**{html.escape(d.title)}**  \n<span style='color:#5B6B78;font-size:0.85rem'>"
+            st.markdown(f"**{html.escape(R(d.title))}**  \n<span style='color:#5B6B78;font-size:0.85rem'>"
                         f"{n} personal detail{'s' if n != 1 else ''} hidden · {html.escape(d.read_note or d.read_status)}</span>",
                         unsafe_allow_html=True)
     else:
@@ -366,7 +366,7 @@ with tab_dead:
             st.markdown(R(brief.text))
             for a in brief.alerts:
                 cls = "alert-" + a.urgency.replace(" ", "-")
-                st.markdown(f'<div class="{cls}"><b>{html.escape(R(a.title))}</b> · {html.escape(a.source)}<br>'
+                st.markdown(f'<div class="{cls}"><b>{html.escape(R(a.title))}</b> · {html.escape(R(a.source))}<br>'
                             f'<span style="color:#5B6B78;font-size:0.86rem">Last day to act: {describe(a.act_by, brief.day)}'
                             f'{" · " + html.escape(a.amount) if a.amount else ""}'
                             f'{" · renews automatically" if a.auto_renews else ""}</span></div>', unsafe_allow_html=True)
@@ -397,7 +397,7 @@ with tab_dead:
     if items:
         rows = []
         for o in items:
-            rows.append({"What": R(o.title), "From": o.counterparty or titles.get(o.doc_id or "", "reminder"),
+            rows.append({"What": R(o.title), "From": R(o.counterparty or titles.get(o.doc_id or "", "reminder")),
                          "Last day to act": describe(o.act_by, today), "Due": o.due_date.strftime("%d %b %Y"),
                          "Notice": f"{o.notice_days} days" if o.notice_days else "",
                          "Amount": f"{o.amount:,.0f} {o.currency or ''}" if o.amount else "",
@@ -421,7 +421,7 @@ with tab_docs:
     for d in docs:
         n = sum(d.hidden.values())
         kinds = ", ".join(f"{v} {KINDS[k]}{'s' if v > 1 else ''}" for k, v in sorted(d.hidden.items()))
-        with st.expander(f"{d.title} · {n} details hidden" + (f" ({kinds})" if kinds else "")):
+        with st.expander(f"{R(d.title)} · {n} details hidden" + (f" ({kinds})" if kinds else "")):
             if d.read_by or d.read_note:
                 st.caption(f"Read by {badge_of(d.read_by) if d.read_by else '—'} · {d.read_note or d.read_status}"
                            + (f" · {d.summary and R(d.summary)}" if d.summary else ""))
@@ -444,7 +444,7 @@ with tab_docs:
     st.markdown("#### The placeholder vault")
     show = st.toggle("Show the real values", value=False)
     vault_rows = [{"Placeholder": e.placeholder, "What it is": KINDS[e.kind],
-                   "Value": e.value if show else store.vault.masked(e.placeholder), "First seen in": e.source}
+                   "Value": e.value if show else store.vault.masked(e.placeholder), "First seen in": R(e.source)}
                   for e in store.vault.entries.values()]
     if vault_rows:
         st.dataframe(vault_rows, width="stretch", hide_index=True)
@@ -453,12 +453,13 @@ with tab_docs:
     if log:
         blocked = sum(r.check == "blocked" for r in log)
         st.caption(f"{len(log)} calls: {sum('Token Factory' in r.destination for r in log)} to Nebius Token Factory, "
-                   f"{sum('Tavily' in r.destination for r in log)} to Tavily. Each one passed the privacy check"
-                   + (f", except {blocked} that were blocked and never sent." if blocked else "."))
+                   f"{sum('Tavily' in r.destination for r in log)} to Tavily. Before each call Duly checked that no value "
+                   f"from the vault was in it" + (f"; {blocked} were blocked and never sent." if blocked else ".")
+                   + " The check can only stop details the detectors found, so read what was sent below.")
         for r in reversed(log[-40:]):
             when = r.at[11:19]
             with st.expander(f"{when} · {r.destination} · {r.purpose} · {r.chars:,} characters · "
-                             f"{r.placeholders} placeholders · {'✓ check passed' if r.check == 'passed' else '✗ blocked'}"):
+                             f"{r.placeholders} placeholders · {'✓ no vault value in it' if r.check == 'passed' else '✗ blocked'}"):
                 payload = r.payload
                 instructions = ""
                 if payload.startswith("[system]") and "\n\n[" in payload:

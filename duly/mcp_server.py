@@ -36,11 +36,13 @@ mcp = MCPServer("duly", instructions="Duly keeps the user's paperwork: documents
 
 
 def _ctx() -> Context:
-    return Context(store=STORE, today=date.today(), skills=load_skills(), web=WEB)
+    # What another agent asks Duly to store may hold details its user typed there: redact it in full.
+    return Context(store=STORE, today=date.today(), skills=load_skills(), web=WEB, writes_are_user_text=True)
 
 
 def _call(name: str, args: dict) -> str:
-    return json.dumps(run_tool(_ctx(), name, args), ensure_ascii=False, indent=1)
+    """A tool result, masked against the vault like every tool result Duly's own assistant receives."""
+    return STORE.vault.mask_known(json.dumps(run_tool(_ctx(), name, args), ensure_ascii=False, indent=1))
 
 
 @mcp.tool()
@@ -77,7 +79,7 @@ def remember(fact: str) -> str:
 def morning_brief() -> str:
     """Run today's morning check: what needs attention, most urgent first (redacted)."""
     brief = morning_check(STORE, LLM, date.today(), CFG)
-    return brief.text
+    return STORE.vault.mask_known(brief.text)
 
 
 @mcp.tool()
@@ -85,10 +87,11 @@ def add_document(path: str, title: str = "") -> str:
     """Add a text or Markdown file from this computer: personal details are hidden, then Nemotron reads its dates."""
     p = Path(path).expanduser()
     text = p.read_text(encoding="utf-8", errors="replace")
-    doc = STORE.add_document(title or p.stem, text, filename=p.name, max_chars=int(CFG["reader"]["max_document_chars"]))
+    doc = STORE.add_document(title, text, filename=p.name, max_chars=int(CFG["reader"]["max_document_chars"]))
     if LLM.available:
         doc = read_document(STORE, LLM, doc, date.today(), CFG)
-    return json.dumps({"document": doc.title, "hidden": doc.hidden, "read": doc.read_note}, ensure_ascii=False)
+    return STORE.vault.mask_known(json.dumps({"document": doc.title, "hidden": doc.hidden, "read": doc.read_note},
+                                             ensure_ascii=False))
 
 
 if __name__ == "__main__":

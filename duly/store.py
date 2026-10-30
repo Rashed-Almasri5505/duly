@@ -156,9 +156,17 @@ class Store:
         with self._lock:
             truncated = len(text) > max_chars
             original = text[:max_chars]
-            redacted, used = self.vault.redact(original, source=title)
+            pending = f"(new document {uuid.uuid4().hex[:6]})"
+            redacted, used = self.vault.redact(original, source=pending)
+            # The title is sent with every question, so it is redacted too, after the text (whose names are then
+            # known). With no title, the redacted first line of the document is used, never a file name: file
+            # names often hold the owner's name ("Omar_Haddad_receipt.pdf").
+            safe_title, _ = self.vault.redact(title or _first_line(redacted), source="a document title")
+            for e in self.vault.entries.values():
+                if e.source == pending:
+                    e.source = safe_title
             self.vault.save()
-            doc = Document(id=new_id("doc"), title=title, kind=kind, filename=filename, original=original,
+            doc = Document(id=new_id("doc"), title=safe_title, kind=kind, filename=filename, original=original,
                            redacted=redacted, hidden=count_by_kind(used), truncated=truncated)
             docs = self.documents() + [doc]
             self._save("documents.json", [d.model_dump() for d in docs])
@@ -217,9 +225,11 @@ class Store:
     def notes(self) -> list[Note]:
         return [Note(**n) for n in self._load("notes.json", [])]
 
-    def add_note(self, text: str, source: Literal["assistant", "you"] = "assistant") -> Note:
+    def add_note(self, text: str, source: Literal["assistant", "you"] = "assistant",
+                 from_model: bool | None = None) -> Note:
         with self._lock:
-            note = Note(id=new_id("note"), text=self._safe(text, from_model=source == "assistant"), source=source)
+            from_model = source == "assistant" if from_model is None else from_model
+            note = Note(id=new_id("note"), text=self._safe(text, from_model=from_model), source=source)
             self._save("notes.json", [n.model_dump() for n in self.notes() + [note]])
             return note
 
@@ -300,6 +310,15 @@ class Store:
             shutil.rmtree(self.root, ignore_errors=True)
             self.root.mkdir(parents=True, exist_ok=True)
             self.vault = Vault(self.root / "vault.json")
+
+
+def _first_line(redacted: str) -> str:
+    """A title from the first line of a document that has words in it (already redacted)."""
+    for line in redacted.splitlines():
+        line = " ".join(line.strip(" #*|-–—=_\t").split())
+        if sum(c.isalpha() for c in line) >= 3:
+            return line if len(line) <= 70 else line[:67].rsplit(" ", 1)[0] + "…"
+    return "Untitled document"
 
 
 _STOP = {"the", "a", "an", "and", "or", "of", "to", "in", "on", "for", "is", "are", "my", "i", "me", "it", "be",
