@@ -1,0 +1,65 @@
+# Duly configuration. Secrets never go here: they come from .env locally and from st.secrets when deployed.
+
+llm:
+  # Global URL from the Token Factory docs (the same endpoint FaultTwin uses).
+  base_url: "https://api.tokenfactory.nebius.com/v1/"
+  timeout_s: 60
+  max_retries: 3
+  # Resolved from client.models.list() by scripts/smoke_test.py. Letter case matters.
+  models_verified_on: "2026-10-30"
+  models:
+    agent: "nvidia/nemotron-3-super-120b-a12b"        # the assistant: plans, calls tools, writes drafts
+    reader: "nvidia/nemotron-3-super-120b-a12b"       # reads a document into dated obligations (JSON schema)
+    brief: "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B"    # writes the short morning brief
+    router: "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B"   # picks the skill for a question
+  # Reasoning is on by default for every Nemotron model; these switch it off or make it brief.
+  sampling:
+    nano: [0.6, 0.95]
+    super: [1.0, 0.95]
+  # USD per 1M tokens, [input, output]. Public Token Factory model catalog.
+  prices_usd_per_1m_tokens:
+    nano: [0.06, 0.24]
+    lightning: [0.06, 0.24]
+    super: [0.30, 0.90]
+    ultra: [1.00, 3.00]
+
+agent:
+  max_tool_calls: 8
+  max_wall_s: 120
+  max_cost_usd: 0.05
+  thinking: "low"             # Super reasons briefly; "off" or "default" also allowed
+  max_tokens_per_turn: 1800
+  history_turns: 6            # earlier chat turns sent with a new question
+
+reader:
+  max_document_chars: 20000   # longer documents are cut, and the cut is shown
+  # With reasoning off, Super began with the list and the schema forced it into the summary field (seen on
+  # 2026-10-30); brief reasoning gives clean JSON.
+  thinking: "low"
+  max_tokens: 2500
+
+deadlines:
+  lead_days: 7                # remind this many days before the last day to act
+  brief_window_days: 45       # the morning check looks this far ahead
+
+budget:
+  live_turns_per_session: 8   # assistant questions per visit before recordings are shown
+  daily_usd: 0.5              # overridden by DEMO_DAILY_BUDGET_USD
+  total_usd: 5.0              # overridden by DEMO_TOTAL_BUDGET_USD
+  tavily_daily_credits: 20    # overridden by DEMO_TAVILY_DAILY_CREDITS
+  tavily_total_credits: 150   # overridden by DEMO_TAVILY_TOTAL_CREDITS
+  # Judging period (1 Dec 2026, 09:00 PT, to 15 Dec, 12:00 PT) as inclusive UTC dates with a day of margin
+  # each side. On these dates every demo limit is at least the value below, whatever the secrets say.
+  judging_period_utc: ["2026-11-30", "2026-12-16"]
+  judging:
+    live_turns_per_session: 10
+    daily_usd: 0.5
+    total_usd: 10.0
+    tavily_daily_credits: 20
+    tavily_total_credits: 300
+  ledger_path: "data/cache/spend.json"
+
+tavily:
+  search_depth: "basic"
+  max_results: 5
+  cache_dir: "data/cache/tavily"

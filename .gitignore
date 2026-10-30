@@ -1,0 +1,24 @@
+# Secrets
+.env
+.streamlit/secrets.toml
+
+# Local-only working files
+CLAUDE.md
+PROGRESS.md
+submission/
+
+# Personal data, caches and environments
+data/user/
+data/sessions/
+data/cache/
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Editors and OS
+.claude/
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

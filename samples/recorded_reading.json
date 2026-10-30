@@ -1,0 +1,131 @@
+{
+ "recorded_on": "2026-10-30",
+ "samples": {
+  "01_laptop_receipt": {
+   "summary": "Receipt showing purchase of a Dell XPS 13 laptop with a one‑year limited warranty from Northwind Electronics.",
+   "model": "nvidia/nemotron-3-super-120b-a12b",
+   "obligations": [
+    {
+     "kind": "warranty_end",
+     "title": "Manufacturer warranty expires",
+     "counterparty": "Northwind Electronics",
+     "notice_days": 0,
+     "amount": null,
+     "currency": null,
+     "auto_renews": false,
+     "action": "If a hardware defect occurs, submit a claim using the receipt and service tag before the warranty end date.",
+     "date_quote": "- Warranty valid until: {{D+65|%d/%m/%Y}}",
+     "rule_quote": null,
+     "status": "upcoming",
+     "verified": true,
+     "check_note": null,
+     "source": "document",
+     "due_offset_days": 65
+    }
+   ]
+  },
+  "02_car_insurance": {
+   "summary": "Car insurance policy schedule for [PERSON_1] with Harbor Mutual Insurance.",
+   "model": "nvidia/nemotron-3-super-120b-a12b",
+   "obligations": [
+    {
+     "kind": "renewal",
+     "title": "Car insurance policy expires",
+     "counterparty": "Harbor Mutual Insurance",
+     "notice_days": 7,
+     "amount": 2350.0,
+     "currency": "SAR",
+     "auto_renews": false,
+     "action": "Contact Harbor Mutual at least 7 days before {{D+30|%d %B %Y}} to renew the policy.",
+     "date_quote": "From {{D-335|%d %B %Y}} to {{D+30|%d %B %Y}} (both days included).",
+     "rule_quote": "To renew without a gap in cover, contact Harbor Mutual at least 7 days before the policy expires.",
+     "status": "upcoming",
+     "verified": true,
+     "check_note": null,
+     "source": "document",
+     "due_offset_days": 30
+    }
+   ]
+  },
+  "03_gym_membership": {
+   "summary": "Gym membership agreement between the member and Pulse Fitness Club.",
+   "model": "nvidia/nemotron-3-super-120b-a12b",
+   "obligations": [
+    {
+     "kind": "renewal",
+     "title": "Gym membership renewal",
+     "counterparty": "Pulse Fitness Club",
+     "notice_days": 14,
+     "amount": 3600.0,
+     "currency": "SAR",
+     "auto_renews": true,
+     "action": "Provide written notice of cancellation at least 14 days before {{D+24|%B %d, %Y}} if you do not wish to renew the membership.",
+     "date_quote": "The membership started on {{D-341|%B %d, %Y}} for a term of 12 months. The current term ends on {{D+24|%B %d, %Y}}.",
+     "rule_quote": "unless the member gives written notice of cancellation at least 14 days before the end of the term.",
+     "status": "upcoming",
+     "verified": true,
+     "check_note": null,
+     "source": "document",
+     "due_offset_days": 24
+    }
+   ]
+  },
+  "04_apartment_lease": {
+   "summary": "Residential lease agreement between [PERSON_1] and Al Noor Real Estate Co. for apartment at [ADDRESS_1], Apartment 6.",
+   "model": "nvidia/nemotron-3-super-120b-a12b",
+   "obligations": [
+    {
+     "kind": "payment",
+     "title": "Third rent instalment due",
+     "counterparty": "Al Noor Real Estate Co.",
+     "notice_days": 0,
+     "amount": 10500.0,
+     "currency": "SAR",
+     "auto_renews": false,
+     "action": "Pay SAR 10,500 by {{D+12|%Y-%m-%d}}.",
+     "date_quote": "3 | {{D+12|%Y-%m-%d}} | 10,500 | Due",
+     "rule_quote": null,
+     "status": "upcoming",
+     "verified": true,
+     "check_note": null,
+     "source": "document",
+     "due_offset_days": 12
+    },
+    {
+     "kind": "payment",
+     "title": "Fourth rent instalment due",
+     "counterparty": "Al Noor Real Estate Co.",
+     "notice_days": 0,
+     "amount": 10500.0,
+     "currency": "SAR",
+     "auto_renews": false,
+     "action": "Pay SAR 10,500 by {{D+103|%Y-%m-%d}}.",
+     "date_quote": "4 | {{D+103|%Y-%m-%d}} | 10,500 | Due",
+     "rule_quote": null,
+     "status": "upcoming",
+     "verified": true,
+     "check_note": null,
+     "source": "document",
+     "due_offset_days": 103
+    },
+    {
+     "kind": "renewal",
+     "title": "Lease renewal",
+     "counterparty": "Al Noor Real Estate Co.",
+     "notice_days": 60,
+     "amount": null,
+     "currency": null,
+     "auto_renews": true,
+     "action": "Give written notice to Al Noor Real Estate Co. by 2027-03-14 if you do not wish to renew the lease.",
+     "date_quote": "The lease runs for one year, from {{D-170|%Y-%m-%d}} to {{D+195|%Y-%m-%d}}.",
+     "rule_quote": "The lease renews for another year on the same terms unless either party notifies the other in writing at least 60 days before the end of the term.",
+     "status": "upcoming",
+     "verified": true,
+     "check_note": null,
+     "source": "document",
+     "due_offset_days": 195
+    }
+   ]
+  }
+ }
+}
