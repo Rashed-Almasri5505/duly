@@ -5,7 +5,7 @@ period match the answer key below (written by hand from the documents). Assistan
 asked several times; we check the skill Nano picked, that the skill's required tools were really called, that no
 call was blocked by the privacy check, and how many links or addresses had to be removed.
 
-    python scripts/evaluate.py --reads 3 --asks 2          # about $0.10
+    python scripts/evaluate.py --reads 3 --asks 2          # about $0.06
 """
 
 from __future__ import annotations

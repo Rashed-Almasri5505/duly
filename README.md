@@ -1,7 +1,7 @@
 # Duly: a private assistant for your paperwork
 
 **Duly reads your contracts, policies, receipts and memberships, keeps every deadline, checks them each morning,
-and drafts what you need. The AI model never sees your personal details.**
+and drafts what you need. Your personal details are hidden on your computer before the AI model sees anything.**
 
 Built for the Nebius x NVIDIA Global AI Hackathon, Personal AI track.
 
@@ -50,7 +50,7 @@ flowchart LR
     D["Your documents<br/>(originals)"] --> F["Privacy firewall<br/>placeholders + vault"]
     F --> M["Memory<br/>deadlines, facts, drafts"]
     M --> T["Tools + skills<br/>(SKILL.md)"]
-    S["Morning check<br/>(scheduler or Hermes cron)"] --> M
+    S["Morning check<br/>(Task Scheduler or cron)"] --> M
     T --> G["Gateway<br/>leak check + outbound log"]
   end
   G -->|"redacted text only"| N["Nebius Token Factory<br/>Nemotron Nano: route, brief<br/>Nemotron Super: read, act"]
@@ -73,16 +73,18 @@ flowchart LR
 - **One way out.** Every model call and web search goes through `duly/gateway.py`, which blocks the call if any value
   from the vault is in the payload, and logs the exact text sent. The check can only stop what the detectors found,
   which is why the log shows each payload in full.
-- **The model never writes a date.** Code finds every date written in a document (with the document's day/month
-  convention) and numbers them; Nemotron Super only says which dates matter and what each means, in a strict JSON
-  schema. A notice period counts only if code finds the number of days in a sentence of the document.
-- **Skills with guarantees.** Procedures live in the open Agent Skills format (`skills/<name>/SKILL.md`). Nemotron
-  Nano picks the skill; Nemotron Super follows it; Duly does not accept an answer until the skill's required tools
-  (for example the web search and the draft) have really been called.
-- **No invented links.** A link or e-mail address in an answer must appear in a document or a search result of that
-  turn; any other is removed, and the answer says so.
-- **Always on.** `scripts/morning.py` runs the morning check from Windows Task Scheduler or cron. The same tools are
-  an MCP server, so Hermes Agent can use Duly from Telegram or its own scheduler.
+- **The model never reads a date out of a document itself.** Code finds every date written in a document (with the
+  document's day/month convention) and numbers them; Nemotron Super only says which dates matter and what each
+  means, in a strict JSON schema. A notice period is flagged "check this" unless code finds the number of days in a
+  sentence of the document.
+- **Skills with checked steps.** Procedures live in the open Agent Skills format (`skills/<name>/SKILL.md`).
+  Nemotron Nano picks the skill; Nemotron Super follows it. Duly asks the model again, up to twice, for any step the
+  skill requires that it skipped; if a step still cannot be done (for example the day's web-search budget is used
+  up), the answer says so.
+- **No invented links.** A link or e-mail address stays in an answer only if a tool returned it in that turn (a
+  passage of your documents or a search result); any other is removed, and the answer says so.
+- **Always on.** `scripts/morning.py` runs the morning check from Windows Task Scheduler or cron. Duly's tools also
+  run as an MCP server for agents such as Hermes Agent (tested with an MCP client, not yet inside Hermes).
 
 ## How we use NVIDIA Nemotron
 
@@ -107,8 +109,8 @@ Lessons from building on them, also in our feedback:
 - Tool calling and strict JSON-schema output worked on Super through the standard OpenAI SDK, with no special client.
 - Usage is metered from each response, so Duly shows the tokens, latency and cost of every step, and the public demo
   enforces daily and total spend caps.
-- Hermes Agent ships a built-in Nebius Token Factory provider, which makes Duly's MCP tools usable from Hermes with
-  the same models.
+- Hermes Agent ships a built-in Nebius Token Factory provider, so Hermes could use Duly's MCP tools with the same
+  Nemotron models (not yet tested inside Hermes).
 
 **Other Nebius tools:** none besides Token Factory.
 
@@ -116,8 +118,9 @@ Lessons from building on them, also in our feedback:
 
 Tavily finds the official procedure for the task at hand: the manufacturer's warranty claim pages, an insurer's
 renewal steps, a provider's cancellation rules. Search queries pass the same privacy check as model calls, results
-are cached for a day, and each source is labelled *via Tavily (live)* or *(cached)*. Because links in an answer must
-come from a search result, Tavily is what lets the assistant give links at all.
+are cached for a day, and each source is labelled *via Tavily (live)* or *(cached)*. Because a link stays in an
+answer only if a tool returned it, Tavily is what lets the assistant link to official pages your documents do not
+mention.
 
 ## Results
 
@@ -143,6 +146,9 @@ Duly's tools run as an MCP server over stdio:
 python -m duly.mcp_server
 ```
 
+Tested: the server's seven tools answer an MCP client (the MCP Python SDK over stdio) with redacted results. It has
+not yet been tested inside Hermes Agent itself, so the Hermes setup below is untested.
+
 In Hermes Agent, choose the Nebius Token Factory provider (`hermes model`, with `NEBIUS_API_KEY` set) and add Duly
 to `~/.hermes/config.yaml`:
 
@@ -152,6 +158,7 @@ mcp_servers:
     command: "/path/to/duly/.venv/bin/python"     # .venv\Scripts\python.exe on Windows
     args: ["-m", "duly.mcp_server"]
     env:
+      PYTHONPATH: "/path/to/duly"                 # the cloned folder, so Python finds the duly package
       DULY_DATA_DIR: "/path/to/your/duly-data"
 ```
 
@@ -159,20 +166,23 @@ The tools return the same redacted text Duly's own assistant sees, so documents 
 type to Hermes yourself does not pass through Duly's firewall. The `skills/` folders use the same SKILL.md format
 that Hermes reads.
 
-Tested: the server's seven tools answer an MCP client (the MCP Python SDK over stdio) with redacted results. Not yet
-tested inside Hermes Agent itself in this build.
-
 ## Run it locally
 
 Prerequisites: Python 3.11 or newer, a Nebius Token Factory API key, a Tavily API key.
+
+No keys? Duly still runs: the samples load with a recorded reading and the Assistant tab shows conversations recorded
+live. `python scripts/run_demo.py --offline` runs it like the hosted demo without keys.
 
 ```bash
 git clone https://github.com/Rashed-Almasri5505/duly.git
 cd duly
 python -m venv .venv
-.venv\Scripts\activate            # Windows; on macOS/Linux: source .venv/bin/activate
+# Activate it with the one line for your shell:
+.venv\Scripts\activate              # Windows cmd or PowerShell
+source .venv/Scripts/activate       # Git Bash on Windows
+source .venv/bin/activate           # macOS or Linux
 pip install -r requirements.txt
-cp .env.example .env              # Windows: copy .env.example .env, then add your two keys
+cp .env.example .env                # in cmd: copy .env.example .env; then add your two keys
 streamlit run app.py
 ```
 
@@ -186,7 +196,7 @@ pytest                                                   # 55 tests, no network
 python scripts/smoke_test.py                             # checks the models and Tavily (under one cent)
 python scripts/ask.py "What do I need to do in the next 30 days?"
 python scripts/morning.py                                # the morning check; schedule it once (see the file)
-python scripts/evaluate.py                               # the live evaluation above (about $0.10)
+python scripts/evaluate.py                               # the live evaluation above (about $0.06)
 python scripts/run_demo.py                               # the app as hosted: samples, private per visit
 ```
 
@@ -194,9 +204,9 @@ python scripts/run_demo.py                               # the app as hosted: sa
 
 The public demo runs on Streamlit Community Cloud with `DULY_DEMO_MODE=1`: every visitor gets a private, temporary
 copy of the fictional sample documents (deleted after a day), and live use is capped per visit and per day. If live
-AI is paused (a cap is reached or a service is down), the app shows conversations recorded live with the same
-samples, labelled with their date. Community Cloud apps sleep when unused: click the wake-up button and wait about
-30 seconds.
+AI is paused (a cap is reached, or Token Factory stops answering), the app shows conversations recorded live with the
+same samples, dated the day they were recorded; reaching the web-search cap only turns web search off. Community
+Cloud apps sleep when unused: click the wake-up button and wait about 30 seconds.
 
 ## Project structure
 
@@ -206,7 +216,7 @@ config.yaml             models, prices, limits
 duly/privacy.py         detectors, vault, leak check
 duly/gateway.py         the only way out: model calls and Tavily searches, checked and logged
 duly/reader.py          document -> dated obligations (code finds dates, Nemotron Super labels them)
-duly/agent.py           the assistant loop: Nano routes, Super acts, skill steps enforced, links grounded
+duly/agent.py           the assistant loop: Nano routes, Super acts, skill steps checked, links grounded
 duly/tools.py           the assistant's tools
 duly/store.py           memory: documents, obligations, facts, drafts, outbound log
 duly/brief.py           the morning check
