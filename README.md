@@ -1,13 +1,15 @@
 # Duly: a private assistant for your paperwork
 
 **Duly reads your contracts, policies, receipts and memberships, keeps every deadline, checks them each morning,
-and drafts what you need. Your personal details are hidden on your computer before the AI model sees anything.**
+and drafts what you need. The personal details it finds are hidden on your computer before the AI model sees
+anything.**
 
 Built for the Nebius x NVIDIA Global AI Hackathon, Personal AI track.
 
 - Live demo: [duly-paperwork.streamlit.app](https://duly-paperwork.streamlit.app/) (free, no login; if the demo is
-  asleep, click the wake-up button and wait about 30 s)
-- Video: `<YouTube URL>`
+  asleep, click the wake-up button and wait about 30 s). On the hosted demo, personal details are hidden on the
+  demo server before any model call; installed locally, that happens on your computer.
+- Video: [youtu.be/98EG9s3dmtg](https://youtu.be/98EG9s3dmtg) (2:19)
 - License: [MIT](LICENSE)
 
 ![Duly: what stays on your computer, and what the model reads](docs/images/privacy.png)
@@ -20,8 +22,8 @@ Paperwork deadlines cost real money, and the help people reach for today costs t
   charged for a subscription they no longer use ([CNBC, June 2022](https://www.nbcwashington.com/news/business/money-report/consumers-spend-an-average-133-more-each-month-on-subscriptions-than-they-realize-study-shows/3067565/)).
   Auto-renewals, notice periods, warranty ends and policy expiries hide in documents nobody rereads.
 - **AI help means handing over personal data.** In Cisco's 2024 Consumer Privacy Survey (2,600 consumers in 12
-  countries), 30% of generative AI users said they enter personal or confidential information, including financial
-  and health details, into AI tools, despite 84% being concerned about that data going public
+  countries), 84% of generative AI users were concerned about the data they enter going public, yet 30% said they
+  enter personal or confidential information, including financial and health details, into these tools
   ([Cisco, Oct 2024](https://newsroom.cisco.com/c/r/newsroom/en/us/a/y2024/m10/cisco-survey-shows-strong-relationship-between-privacy-awareness-and-trust-in-ai.html)).
 
 Duly is an assistant you can give your paperwork to, because your names, ID numbers, IBANs, phone numbers and
@@ -73,9 +75,9 @@ flowchart LR
 - **One way out.** Every model call and web search goes through `duly/gateway.py`, which blocks the call if any value
   from the vault is in the payload, and logs the exact text sent. The check can only stop what the detectors found,
   which is why the log shows each payload in full.
-- **The model never reads a date out of a document itself.** Code finds every date written in a document (with the
-  document's day/month convention) and numbers them; Nemotron Super only says which dates matter and what each
-  means, in a strict JSON schema. A notice period is flagged "check this" unless code finds the number of days in a
+- **The model never reads a date out of a document itself.** Code finds the dates written in a document with a full
+  year (in the document's day/month convention) and numbers them; Nemotron Super only says which dates matter and
+  what each means, in a strict JSON schema. A notice period is flagged "check this" unless code finds the number of days in a
   sentence of the document.
 - **Skills with checked steps.** Procedures live in the open Agent Skills format (`skills/<name>/SKILL.md`).
   Nemotron Nano picks the skill; Nemotron Super follows it. Duly asks the model again, up to twice, for any step the
