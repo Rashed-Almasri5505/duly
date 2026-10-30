@@ -17,6 +17,8 @@ from duly.llm import BudgetExceeded
 from duly.skills import Skill
 from duly.store import KIND_LABELS, Store
 
+MAX_ADD_DAYS = 36500        # date_math adds at most 100 years either way; reminders are at most 100 years ahead
+
 
 @dataclass
 class Context:
@@ -135,8 +137,13 @@ def run_tool(ctx: Context, name: str, args: dict[str, Any]) -> dict[str, Any]:
             if args.get("end_date"):
                 end = _parse_day(args["end_date"], ctx.today)
                 return {"from": describe(start, ctx.today), "to": describe(end, ctx.today), "days": (end - start).days}
-            result = start + timedelta(days=int(args.get("add_days") or 0))
-            return {"result": describe(result, ctx.today), "iso": result.isoformat()}
+            asked = int(args.get("add_days") or 0)
+            days = max(-MAX_ADD_DAYS, min(MAX_ADD_DAYS, asked))
+            result = start + timedelta(days=days)
+            out: dict[str, Any] = {"result": describe(result, ctx.today), "iso": result.isoformat()}
+            if days != asked:
+                out["note"] = f"add_days was limited to {days} (100 years)"
+            return out
         if name == "save_draft":
             draft = ctx.store.add_draft(str(args.get("title", "Draft"))[:120], str(args.get("body", "")),
                                         kind=str(args.get("kind", "email")), to=args.get("to"),
@@ -147,6 +154,8 @@ def run_tool(ctx: Context, name: str, args: dict[str, Any]) -> dict[str, Any]:
             when = _parse_day(args.get("date", ""), ctx.today)
             if when < ctx.today:
                 return {"error": f"{when.isoformat()} is in the past"}
+            if when > ctx.today + timedelta(days=MAX_ADD_DAYS):     # 9999-12-31 ("never") breaks the calendar file
+                return {"error": f"{when.isoformat()} is more than 100 years away"}
             item = ctx.store.add_reminder(str(args.get("title", "Reminder"))[:120], when, str(args.get("note", "")),
                                           from_model=not ctx.writes_are_user_text)
             ctx.reminders.append(item.id)
@@ -166,6 +175,8 @@ def run_tool(ctx: Context, name: str, args: dict[str, Any]) -> dict[str, Any]:
         return {"error": str(exc)}
     except (ValueError, TypeError) as exc:
         return {"error": f"bad arguments: {exc}"}
+    except ArithmeticError as exc:      # OverflowError: a date past year 9999 or before year 1, or an infinite number
+        return {"error": f"number or date out of range: {exc}"}
 
 
 def summarize_result(name: str, result: dict[str, Any]) -> str:

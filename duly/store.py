@@ -2,7 +2,11 @@
 
 Everything lives as JSON files in one folder you own (data/user by default, or DULY_DATA_DIR). Each document
 is kept twice: the original, which never leaves this computer, and the redacted copy, the only one a model
-may read. Remembered facts are redacted before they are stored. Deleting an item removes it from disk.
+may read. Remembered facts are redacted before they are stored. Deleting an item removes it from disk, and
+deleting a document also removes from the vault the personal details nothing else uses.
+
+The app and the MCP server are separate processes on the same folder, so every change that can add to the vault
+first reads the vault again from disk.
 """
 
 from __future__ import annotations
@@ -11,6 +15,7 @@ import json
 import re
 import shutil
 import threading
+import time
 import uuid
 from datetime import date, timedelta
 from pathlib import Path
@@ -115,7 +120,17 @@ class Store:
         self.root = root
         root.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
-        self.vault = Vault(root / "vault.json")
+        self.vault = _read_vault(root / "vault.json")
+
+    def _reload_vault(self) -> None:
+        """Read the vault again before a change. Another process (the app, the MCP server) may have added entries
+        since this store read it: saving the older copy would drop them, and its counters would give their
+        placeholder numbers to other values, so documents would restore to the wrong person. A counter never
+        goes down, even if the file on disk was written by a copy that knew fewer values."""
+        fresh = _read_vault(self.root / "vault.json")
+        for kind, n in self.vault.counters.items():
+            fresh.counters[kind] = max(fresh.counters.get(kind, 0), n)
+        self.vault = fresh
 
     # ----- files -----
     def _path(self, name: str) -> Path:
@@ -139,6 +154,7 @@ class Store:
 
     def save_profile(self, profile: Profile) -> None:
         with self._lock:
+            self._reload_vault()
             for person in ([profile.name] if profile.name else []) + profile.people:
                 self.vault.add_known_person(person)
             self.vault.save()
@@ -154,6 +170,7 @@ class Store:
     def add_document(self, title: str, text: str, *, kind: str = "other", filename: str | None = None,
                      max_chars: int = 20000) -> Document:
         with self._lock:
+            self._reload_vault()
             truncated = len(text) > max_chars
             original = text[:max_chars]
             pending = f"(new document {uuid.uuid4().hex[:6]})"
@@ -177,10 +194,44 @@ class Store:
             docs = [doc if d.id == doc.id else d for d in self.documents()]
             self._save("documents.json", [d.model_dump() for d in docs])
 
-    def delete_document(self, doc_id: str) -> None:
+    def delete_document(self, doc_id: str) -> list[str]:
+        """Delete a document, its dates, and the vault entries it used that nothing else uses (their
+        placeholders are returned). The counters stay, so a placeholder number never goes to another value."""
         with self._lock:
-            self._save("documents.json", [d.model_dump() for d in self.documents() if d.id != doc_id])
+            self._reload_vault()
+            docs = self.documents()
+            doc = next((d for d in docs if d.id == doc_id), None)
+            self._save("documents.json", [d.model_dump() for d in docs if d.id != doc_id])
             self._save("obligations.json", [o.model_dump() for o in self.obligations() if o.doc_id != doc_id])
+            return self._forget_unused(self._entries_of(doc)) if doc else []
+
+    def _entries_of(self, doc: Document) -> set[str]:
+        """The vault entries a document uses: placeholders in its redacted copy and title, values in its original,
+        and entries first seen in it."""
+        return (_placeholders(doc.redacted + "\n\n" + doc.title) | set(self.vault.leaks(doc.original))
+                | {p for p, e in self.vault.entries.items() if e.source == doc.title})
+
+    def _forget_unused(self, candidates: set[str]) -> list[str]:
+        """Remove the candidate entries that no remaining document (original, redacted copy or title), note,
+        draft, dated item or profile name uses. Entries from elsewhere, such as the user's questions, stay."""
+        texts = [t for d in self.documents() for t in (d.original, d.redacted, d.title, d.summary or "")]
+        texts += [n.text for n in self.notes()]
+        texts += [t for d in self.drafts() for t in (d.title, d.to or "", d.body)]
+        texts += [t or "" for o in self.obligations()
+                  for t in (o.title, o.counterparty, o.action, o.date_quote, o.rule_quote, o.check_note)]
+        kept = "\n\n".join(texts)
+        probe = Vault()                         # the candidates alone, so the scan of everything kept stays short
+        probe.entries = {p: self.vault.entries[p] for p in candidates if p in self.vault.entries}
+        profile = self.profile()
+        in_use = (_placeholders(kept) | set(probe.leaks(kept))
+                  | {self.vault.lookup("PERSON", p) for p in [profile.name or "", *profile.people] if p})
+        gone = sorted(set(probe.entries) - in_use)
+        if gone:
+            for placeholder in gone:
+                del self.vault.entries[placeholder]
+            self.vault.known_people = [p for p in self.vault.known_people if self.vault.lookup("PERSON", p)]
+            self.vault.save()
+        return gone
 
     # ----- obligations and reminders -----
     def obligations(self) -> list[Obligation]:
@@ -191,18 +242,25 @@ class Store:
             kept = [o for o in self.obligations() if o.doc_id != doc_id]
             self._save("obligations.json", [o.model_dump() for o in kept + items])
 
-    def _safe(self, text: str, from_model: bool) -> str:
+    def _safe(self, text: str, from_model: bool, source: str = "") -> str:
         """Text written by the model only needs known values masked (it never saw real ones, and scanning it for
         new details would turn phrases like 'Dear Dell Support' into vault entries). Text the user typed is
-        scanned in full."""
+        scanned in full. Callers hold the lock and have reloaded the vault."""
         if from_model:
             return self.vault.mask_known(text)
-        safe, _ = self.vault.redact(text)
+        safe, _ = self.vault.redact(text, source=source)
         self.vault.save()
         return safe
 
+    def redact(self, text: str, source: str = "") -> str:
+        """Text the user typed (a question), with every personal detail replaced; new details are saved."""
+        with self._lock:
+            self._reload_vault()
+            return self._safe(text, from_model=False, source=source)
+
     def add_reminder(self, title: str, due: date, note: str = "", *, from_model: bool = True) -> Obligation:
         with self._lock:
+            self._reload_vault()
             safe_title, safe_note = self._safe(title, from_model), self._safe(note, from_model)
             item = Obligation(id=new_id("rem"), title=safe_title, due_date=due, action=safe_note,
                               source="reminder", verified=True, kind="other")
@@ -228,6 +286,7 @@ class Store:
     def add_note(self, text: str, source: Literal["assistant", "you"] = "assistant",
                  from_model: bool | None = None) -> Note:
         with self._lock:
+            self._reload_vault()
             from_model = source == "assistant" if from_model is None else from_model
             note = Note(id=new_id("note"), text=self._safe(text, from_model=from_model), source=source)
             self._save("notes.json", [n.model_dump() for n in self.notes() + [note]])
@@ -247,6 +306,7 @@ class Store:
     def add_draft(self, title: str, body: str, *, kind: str = "email", to: str | None = None,
                   doc_id: str | None = None, from_model: bool = True) -> Draft:
         with self._lock:
+            self._reload_vault()
             draft = Draft(id=new_id("draft"), kind=kind, title=self._safe(title, from_model),
                           to=self._safe(to, from_model) if to else None, body=self._safe(body, from_model),
                           doc_id=doc_id)
@@ -310,6 +370,22 @@ class Store:
             shutil.rmtree(self.root, ignore_errors=True)
             self.root.mkdir(parents=True, exist_ok=True)
             self.vault = Vault(self.root / "vault.json")
+
+
+def _read_vault(path: Path, attempts: int = 20) -> Vault:
+    """The vault on disk. Vault.save rewrites the file in place, so a read while another process saves it can
+    find half a file: it is read again a moment later."""
+    for _ in range(attempts - 1):
+        try:
+            return Vault(path)
+        except ValueError:                      # cut JSON, or a cut UTF-8 character
+            time.sleep(0.025)
+    return Vault(path)
+
+
+def _placeholders(text: str) -> set[str]:
+    """The placeholders in a text, also as a model may write them ("PERSON 1")."""
+    return {f"[{kind}_{n}]" for kind, n in PLACEHOLDER_RE.findall(text)}
 
 
 def _first_line(redacted: str) -> str:

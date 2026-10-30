@@ -25,7 +25,6 @@ from duly.store import Store
 from duly.tools import Context, run_tool
 
 CFG = load_config()
-STORE = Store(default_data_dir())
 LEDGER = SpendLedger.from_config(CFG)
 LLM = TokenFactory(CFG, ledger=LEDGER)
 WEB = TavilySearch(CFG, ledger=LEDGER)
@@ -35,14 +34,23 @@ mcp = MCPServer("duly", instructions="Duly keeps the user's paperwork: documents
               "like [PERSON_1]; keep them as written. Never compute dates: use the dates these tools return.")
 
 
+def _store() -> Store:
+    # A fresh Store for every call: the app writes to the same folder, and a vault kept from an earlier call would
+    # mask with old values and could be saved over the app's new entries.
+    return Store(default_data_dir())
+
+
 def _ctx() -> Context:
     # What another agent asks Duly to store may hold details its user typed there: redact it in full.
-    return Context(store=STORE, today=date.today(), skills=load_skills(), web=WEB, writes_are_user_text=True)
+    return Context(store=_store(), today=date.today(), skills=load_skills(), web=WEB, writes_are_user_text=True)
 
 
 def _call(name: str, args: dict) -> str:
     """A tool result, masked against the vault like every tool result Duly's own assistant receives."""
-    return STORE.vault.mask_known(json.dumps(run_tool(_ctx(), name, args), ensure_ascii=False, indent=1))
+    ctx = _ctx()
+    result = run_tool(ctx, name, args)
+    # ctx.store.vault is read after the tool ran: a tool that writes reloads the vault and may add entries.
+    return ctx.store.vault.mask_known(json.dumps(result, ensure_ascii=False, indent=1))
 
 
 @mcp.tool()
@@ -78,19 +86,21 @@ def remember(fact: str) -> str:
 @mcp.tool()
 def morning_brief() -> str:
     """Run today's morning check: what needs attention, most urgent first (redacted)."""
-    brief = morning_check(STORE, LLM, date.today(), CFG)
-    return STORE.vault.mask_known(brief.text)
+    store = _store()
+    brief = morning_check(store, LLM, date.today(), CFG)
+    return store.vault.mask_known(brief.text)
 
 
 @mcp.tool()
 def add_document(path: str, title: str = "") -> str:
     """Add a text or Markdown file from this computer: personal details are hidden, then Nemotron reads its dates."""
+    store = _store()
     p = Path(path).expanduser()
     text = p.read_text(encoding="utf-8", errors="replace")
-    doc = STORE.add_document(title, text, filename=p.name, max_chars=int(CFG["reader"]["max_document_chars"]))
+    doc = store.add_document(title, text, filename=p.name, max_chars=int(CFG["reader"]["max_document_chars"]))
     if LLM.available:
-        doc = read_document(STORE, LLM, doc, date.today(), CFG)
-    return STORE.vault.mask_known(json.dumps({"document": doc.title, "hidden": doc.hidden, "read": doc.read_note},
+        doc = read_document(store, LLM, doc, date.today(), CFG)
+    return store.vault.mask_known(json.dumps({"document": doc.title, "hidden": doc.hidden, "read": doc.read_note},
                                              ensure_ascii=False))
 
 

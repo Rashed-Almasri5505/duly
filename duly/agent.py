@@ -120,6 +120,8 @@ class Turn(BaseModel):
     notes: list[str] = []
     reminders: list[str] = []
     skills_used: list[str] = []
+    unfinished: list[str] = []       # the skill's required tools not called when the answer was accepted, each
+                                     # with the last error it returned ("web_search: web search unavailable: ...")
     cost_usd: float = 0.0
     seconds: float = 0.0
     error: str | None = None
@@ -178,24 +180,15 @@ def route(ctx: Context, llm: TokenFactory, question_sent: str) -> tuple[str | No
 
 def run_turn(ctx: Context, llm: TokenFactory, question: str, cfg: dict[str, Any], *,
              history: list[Turn] | None = None, on_step: Callable[[Step], None] | None = None) -> Turn:
-    """Answer one question. Never raises for model or budget errors: they end up in turn.error."""
+    """Answer one question. Never raises: model, budget and privacy errors, and any unexpected one, end up in
+    turn.error, so the app shows a message instead of a traceback."""
     acfg = cfg["agent"]
     store = ctx.store
     t0 = time.perf_counter()
-    sent, _ = store.vault.redact(question, source="your question")
-    store.vault.save()
-    turn = Turn(question=question, question_sent=sent)
-    skill, route_step = route(ctx, llm, sent)
-    if skill and skill not in ctx.skills_used:
-        ctx.skills_used.append(skill)
-    messages: list[dict[str, Any]] = [{"role": "system", "content": system_prompt(ctx, skill)}]
-    for past in (history or [])[-int(acfg["history_turns"]):]:
-        if past.answer and not past.error:
-            messages += [{"role": "user", "content": past.question_sent}, {"role": "assistant", "content": past.answer}]
-    messages.append({"role": "user", "content": sent})
-    tools = tool_schemas(list(ctx.skills))
+    turn = Turn(question=question, question_sent="")
     tool_calls = 0
     called: set[str] = set()
+    last_error: dict[str, str] = {}      # the last error each tool returned, for turn.unfinished
     nudges = 0
     evidence: list[str] = []
 
@@ -209,11 +202,26 @@ def run_turn(ctx: Context, llm: TokenFactory, question: str, cfg: dict[str, Any]
         if on_step is not None:
             on_step(step)
 
-    if route_step is not None:
-        add(route_step)
     try:
-        for n in range(1, int(acfg["max_tool_calls"]) + 3):
-            out_of_budget = (tool_calls >= int(acfg["max_tool_calls"]) or turn.cost_usd >= float(acfg["max_cost_usd"])
+        sent = store.redact(question, source="your question")
+        turn.question_sent = sent
+        skill, route_step = route(ctx, llm, sent)
+        if skill and skill not in ctx.skills_used:
+            ctx.skills_used.append(skill)
+        messages: list[dict[str, Any]] = [{"role": "system", "content": system_prompt(ctx, skill)}]
+        for past in (history or [])[-int(acfg["history_turns"]):]:
+            if past.answer and not past.error:
+                messages += [{"role": "user", "content": past.question_sent},
+                             {"role": "assistant", "content": past.answer}]
+        messages.append({"role": "user", "content": sent})
+        tools = tool_schemas(list(ctx.skills))
+        if route_step is not None:
+            add(route_step)
+        last_step = int(acfg["max_tool_calls"]) + 2
+        for n in range(1, last_step + 1):
+            # The last step always answers: two skill checks and one tool call per step could use them all up.
+            out_of_budget = (n == last_step or tool_calls >= int(acfg["max_tool_calls"])
+                             or turn.cost_usd >= float(acfg["max_cost_usd"])
                              or time.perf_counter() - t0 > float(acfg["max_wall_s"]))
             if out_of_budget:
                 messages.append({"role": "user", "content": "Answer now with what you have found; no more tools."})
@@ -234,6 +242,7 @@ def run_turn(ctx: Context, llm: TokenFactory, question: str, cfg: dict[str, Any]
                 add(Step(kind="tool", label="skill check", summary=f"asked for the skipped steps: {', '.join(missing)}"))
                 continue
             if not res.tool_calls or out_of_budget:
+                turn.unfinished = [f"{t}: {last_error[t]}" if t in last_error else t for t in missing]
                 turn.answer = res.content or "I could not finish an answer. Please ask again in other words."
                 break
             messages.append(res.assistant_message)
@@ -247,17 +256,22 @@ def run_turn(ctx: Context, llm: TokenFactory, question: str, cfg: dict[str, Any]
                 t1 = time.perf_counter()
                 result = run_tool(ctx, tc.name, args)
                 tool_calls += 1
-                if "error" not in result:
+                if "error" in result:
+                    last_error[tc.name] = str(result["error"])
+                else:
                     called.add(tc.name)
                 add(Step(kind="tool", label=tc.name, tool=tc.name, args=args, summary=summarize_result(tc.name, result),
                          latency_s=round(time.perf_counter() - t1, 3)))
                 content = store.vault.mask_known(json.dumps(result, ensure_ascii=False))
                 evidence.append(content)
                 messages.append({"role": "tool", "tool_call_id": tc.id, "content": content})
+        if turn.answer:
+            turn.answer, turn.removed = ground(turn.answer, "\n".join(evidence))
     except (LLMError, BudgetExceeded, PrivacyError) as exc:
         turn.error = str(exc)
-    if turn.answer:
-        turn.answer, turn.removed = ground(turn.answer, "\n".join(evidence))
+    except Exception as exc:  # a bug or a damaged data file: a message in the app, never a traceback
+        turn.answer, turn.removed, turn.unfinished = "", [], []     # an answer not yet checked is not shown
+        turn.error = f"an unexpected error stopped this answer ({type(exc).__name__}: {str(exc)[:200]})"
     turn.sources = list(ctx.sources)
     turn.drafts, turn.notes, turn.reminders = list(ctx.drafts), list(ctx.notes), list(ctx.reminders)
     turn.skills_used = list(ctx.skills_used)
