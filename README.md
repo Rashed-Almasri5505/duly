@@ -192,7 +192,7 @@ Then add your own documents in the sidebar, or click **Load samples**. Your data
 Other commands:
 
 ```bash
-pytest                                                   # 111 tests, no network
+pytest                                                   # 112 tests, no network
 python scripts/smoke_test.py                             # checks the models and Tavily (under one cent)
 python scripts/ask.py "What do I need to do in the next 30 days?"
 python scripts/morning.py                                # the morning check; schedule it once (see the file)
@@ -226,7 +226,7 @@ skills/                 Agent Skills (SKILL.md)
 samples/                fictional documents, dated relative to today, and a recorded reading
 data/replays/           conversations recorded live, for offline mode
 scripts/                smoke test, CLI, morning check, evaluation, recorders
-tests/                  111 tests (91 of them for the privacy firewall)
+tests/                  112 tests (91 of them for the privacy firewall)
 eval/                   evaluation results
 ```
 

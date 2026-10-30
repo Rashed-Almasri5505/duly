@@ -12,7 +12,7 @@ from datetime import date, timedelta
 from typing import Any
 
 from duly.dates import describe, find_dates, slash_convention
-from duly.gateway import LLMError, PrivacyError, Source, TavilySearch
+from duly.gateway import LLMError, PrivacyError, Source, TavilySearch, url_key
 from duly.llm import BudgetExceeded
 from duly.skills import Skill
 from duly.store import KIND_LABELS, Store
@@ -129,7 +129,8 @@ def run_tool(ctx: Context, name: str, args: dict[str, Any]) -> dict[str, Any]:
                 return {"error": "web search is not configured on this installation"}
             query = " ".join(str(args.get("query", "")).split())[:300]
             sources = ctx.web.search(ctx.store, query, purpose="web search by the assistant")
-            ctx.sources.extend(s for s in sources if s.url not in {x.url for x in ctx.sources})
+            listed = {url_key(x.url) for x in ctx.sources}
+            ctx.sources.extend(s for s in sources if url_key(s.url) not in listed)
             return {"results": [{"title": s.title, "url": s.url, "snippet": s.snippet, "via": s.label}
                                 for s in sources]}
         if name == "date_math":

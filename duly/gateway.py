@@ -13,6 +13,7 @@ import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from pydantic import BaseModel
 
@@ -64,6 +65,23 @@ class Source(BaseModel):
         return "via Tavily (live)" if self.via == "live" else f"via Tavily (cached {self.fetched_at[:10]})"
 
 
+def url_key(url: str) -> str:
+    """One key per page: http or https, a "www." prefix, a trailing slash or a #fragment give the same key."""
+    parts = urlsplit(url.strip())
+    host = (parts.hostname or "").removeprefix("www.")
+    return f"{host}{parts.path.rstrip('/')}?{parts.query}"
+
+
+def _one_per_page(results: list[dict[str, str]]) -> list[dict[str, str]]:
+    seen: set[str] = set()
+    unique = []
+    for r in results:
+        if url_key(r["url"]) not in seen:
+            seen.add(url_key(r["url"]))
+            unique.append(r)
+    return unique
+
+
 class TavilySearch:
     """Tavily web search with a shared cache. Queries are checked by the vault like any other outbound call."""
 
@@ -105,7 +123,8 @@ class TavilySearch:
             cached = json.loads(path.read_text(encoding="utf-8"))
             age = datetime.now(timezone.utc) - datetime.fromisoformat(cached["fetched_at"])
             if age < timedelta(hours=self.cache_hours) or self._client is None:
-                return [Source(**r, via="cached", fetched_at=cached["fetched_at"]) for r in cached["results"]]
+                return [Source(**r, via="cached", fetched_at=cached["fetched_at"])
+                        for r in _one_per_page(cached["results"])]
         if self._client is None:
             raise LLMError("TAVILY_API_KEY is not set")
         if self.ledger is not None:
@@ -120,9 +139,9 @@ class TavilySearch:
         self.live_calls += 1
         if self.ledger is not None:
             self.ledger.add_credits(1)
-        results = [{"title": (r.get("title") or r.get("url", ""))[:160], "url": r.get("url", ""),
-                    "snippet": " ".join((r.get("content") or "").split())[:400]}
-                   for r in resp.get("results", []) if r.get("url")]
+        results = _one_per_page([{"title": (r.get("title") or r.get("url", ""))[:160], "url": r.get("url", ""),
+                                  "snippet": " ".join((r.get("content") or "").split())[:400]}
+                                 for r in resp.get("results", []) if r.get("url")])
         fetched_at = utc_now()
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps({"query": query, "fetched_at": fetched_at, "results": results,
@@ -131,4 +150,4 @@ class TavilySearch:
         return [Source(**r, via="live", fetched_at=fetched_at) for r in results]
 
 
-__all__ = ["ask_model", "TavilySearch", "Source", "PrivacyError", "LLMError", "BudgetExceeded"]
+__all__ = ["ask_model", "TavilySearch", "Source", "url_key", "PrivacyError", "LLMError", "BudgetExceeded"]

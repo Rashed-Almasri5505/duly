@@ -127,3 +127,27 @@ def test_deadline_tool_gives_unambiguous_dates(sample_store) -> None:
     search = run_tool(ctx, "search_documents", {"query": "laptop warranty"})
     laptop = next(r for r in search["results"] if r["document"] == "Laptop receipt and warranty")
     assert "2027-01-03 = Sun 3 Jan 2027 (in 65 days)" in laptop["dates_in_text"]
+
+
+class _TavilyTwoSpellings:
+    """Returns one news page under two host spellings, and the support page again under another spelling."""
+
+    def search(self, query: str, **kwargs) -> dict:
+        if "home" in query:
+            return {"results": [{"url": "http://dell.com/support/home#top", "title": "Dell support", "content": "b"}]}
+        page = "https://www.stocktitan.net/news/DELL/xps.html"
+        return {"results": [{"url": page, "title": "XPS news", "content": "a"},
+                            {"url": page.replace("www.", ""), "title": "XPS news", "content": "a"},
+                            {"url": "https://www.dell.com/support/home/", "title": "Dell support", "content": "b"}]}
+
+
+def test_a_page_found_under_two_spellings_is_listed_once(sample_store, cfg, tmp_path) -> None:
+    web = TavilySearch(cfg, client=_TavilyTwoSpellings(), cache_dir=tmp_path / "cache")
+    ctx = Context(store=sample_store, today=TODAY, skills={}, web=web)
+    first = run_tool(ctx, "web_search", {"query": "Dell XPS 13 warranty claim support"})
+    unique = ["https://www.stocktitan.net/news/DELL/xps.html", "https://www.dell.com/support/home/"]
+    assert [r["url"] for r in first["results"]] == unique
+    run_tool(ctx, "web_search", {"query": "Dell support home"})
+    assert [s.url for s in ctx.sources] == unique
+    again = web.search(sample_store, "Dell XPS 13 warranty claim support")      # from the cache
+    assert [(s.url, s.via) for s in again] == [(u, "cached") for u in unique]
