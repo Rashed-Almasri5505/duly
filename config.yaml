@@ -46,8 +46,9 @@ budget:
   live_turns_per_session: 8   # assistant questions per visit before recordings are shown
   daily_usd: 0.5              # overridden by DEMO_DAILY_BUDGET_USD
   total_usd: 5.0              # overridden by DEMO_TOTAL_BUDGET_USD
-  tavily_daily_credits: 20    # overridden by DEMO_TAVILY_DAILY_CREDITS
-  tavily_total_credits: 150   # overridden by DEMO_TAVILY_TOTAL_CREDITS
+  # The Tavily account is shared with another project; searches are cached for a day, so few are live.
+  tavily_daily_credits: 15    # overridden by DEMO_TAVILY_DAILY_CREDITS
+  tavily_total_credits: 100   # overridden by DEMO_TAVILY_TOTAL_CREDITS
   # Judging period (1 Dec 2026, 09:00 PT, to 15 Dec, 12:00 PT) as inclusive UTC dates with a day of margin
   # each side. On these dates every demo limit is at least the value below, whatever the secrets say.
   judging_period_utc: ["2026-11-30", "2026-12-16"]
@@ -55,8 +56,8 @@ budget:
     live_turns_per_session: 10
     daily_usd: 0.5
     total_usd: 10.0
-    tavily_daily_credits: 20
-    tavily_total_credits: 300
+    tavily_daily_credits: 15
+    tavily_total_credits: 200
   ledger_path: "data/cache/spend.json"
 
 tavily:

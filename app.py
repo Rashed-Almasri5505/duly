@@ -542,8 +542,9 @@ digraph {
 """)
     if used:
         st.caption("Measured in this visit: " + "; ".join(
-            f"{badge_of(m)}: {len(cs)} calls, median {sorted(c.latency_s for c in cs)[len(cs) // 2]:.1f} s, "
-            f"${sum(c.cost_usd for c in cs):.4f}" for m, cs in used.items()))
+            f"{badge_of(m)}: {len(cs)} call{'s' if len(cs) != 1 else ''}, median "
+            f"{sorted(c.latency_s for c in cs)[len(cs) // 2]:.1f} s, ${sum(c.cost_usd for c in cs):.5f}"
+            for m, cs in used.items()))
     st.markdown("""
 **Privacy, in five rules**
 1. Code on your computer finds personal details (IBANs and cards with checksums, ID and phone numbers, e-mails, labelled
