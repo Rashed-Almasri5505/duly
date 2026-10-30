@@ -6,11 +6,13 @@ temporary copy of the fictional sample documents.
 
 from __future__ import annotations
 
+import codecs
 import html
 import io
 import json
 import re
 import shutil
+import tempfile
 import time
 import uuid
 from datetime import date, datetime, timedelta, timezone
@@ -26,11 +28,11 @@ from duly.dates import describe
 from duly.gateway import TavilySearch
 from duly.ics import to_ics
 from duly.llm import BudgetExceeded, LLMError, SpendLedger, TokenFactory, badge_of, in_judging_period
-from duly.privacy import KINDS, PLACEHOLDER_RE, PrivacyError
+from duly.privacy import KINDS, PLACEHOLDER_RE, PrivacyError, Vault
 from duly.reader import read_document
-from duly.samples import SAMPLE_PERSON, install_samples
+from duly.samples import SAMPLE_PERSON, install_samples, load_samples
 from duly.skills import load_skills
-from duly.store import KIND_LABELS, Profile, Store
+from duly.store import KIND_LABELS, Draft, Profile, Store
 from duly.tools import Context
 
 st.set_page_config(page_title="Duly · private paperwork assistant", page_icon="🗂️", layout="wide")
@@ -45,6 +47,12 @@ SUGGESTIONS = [
     "What do I need to do in the next 30 days?",
     "How do I renew my car insurance without a gap?",
 ]
+MAX_CHARS = int(CFG["reader"]["max_document_chars"])    # longer documents are cut, and the cut is shown
+PAUSE_S = 300                    # how long live AI rests after Token Factory stopped answering
+# Token Factory errors that mean it is not answering (the SDK has already retried them). Budget and privacy stops,
+# and requests it refused, are not among them.
+SERVER_ERRORS = ("APIConnectionError", "APITimeoutError", "InternalServerError")
+READ_ERRORS = (LLMError, BudgetExceeded, PrivacyError, ValueError, TypeError, KeyError, AttributeError)
 
 st.markdown("""
 <style>
@@ -115,13 +123,33 @@ turn_cap = int(CFG["budget"]["judging"]["live_turns_per_session"] if in_judging_
 def live_status() -> tuple[bool, str]:
     if not llm.available:
         return False, "no Token Factory key is configured"
+    if time.time() < ss.get("paused_until", 0.0):
+        return False, "Token Factory is not answering; live AI resumes in a few minutes"
     try:
         ledger.check(0.002)
     except BudgetExceeded as exc:
         return False, str(exc)
     if DEMO and ss.live_turns >= turn_cap:
-        return False, f"this visit has used its {turn_cap} live questions"
+        return False, f"this visit has used its {turn_cap} live questions and document reads"
     return True, "ready"
+
+
+def pause_if_down(error: str | None) -> None:
+    """After a connection, timeout or server error, rest live AI for a few minutes, so the visitor sees the recorded
+    conversations instead of one error after another."""
+    if error and error.split(":", 1)[0].strip() in SERVER_ERRORS:
+        ss.paused_until = time.time() + PAUSE_S
+
+
+def flash(kind: str, text: str) -> None:
+    """A message for the top of the sidebar on the next run: st.rerun() drops anything shown in this one."""
+    ss.flash = ss.get("flash", []) + [(kind, text)]
+
+
+def md(text: str | None) -> str:
+    """Text for st.markdown, captions and labels, where two '$' signs would turn the amounts between them into a
+    LaTeX formula."""
+    return (text or "").replace("$", "\\$")
 
 
 def R(text: str | None) -> str:
@@ -154,7 +182,7 @@ st.markdown("## Duly")
 st.markdown('<div class="duly-sub">A private assistant for your paperwork. It remembers every deadline in your '
             'documents, checks them each morning, and drafts what you need, without showing your personal '
             'details to the AI model.</div>', unsafe_allow_html=True)
-chips = [f'<span class="chip {"ok" if live else "warn"}">Live AI: {"ready" if live else "paused (" + html.escape(why) + ")"}</span>',
+chips = [f'<span class="chip {"ok" if live else "warn"}">Live AI: {"ready" if live else "paused (" + md(html.escape(why)) + ")"}</span>',
          '<span class="chip">NVIDIA Nemotron on Nebius Token Factory</span>',
          f'<span class="chip">Web search: Tavily{"" if web.available else " (not configured)"}</span>',
          f'<span class="chip ok">{hidden_total} personal details hidden from the model</span>']
@@ -164,58 +192,149 @@ st.markdown("".join(chips), unsafe_allow_html=True)
 
 
 # ---------------------------------------------------------------- sidebar
+class UnreadableFile(ValueError):
+    """An upload that cannot be turned into text; the message tells the visitor why."""
+
+
+def pdf_text(raw: bytes) -> str:
+    """The text layer of a PDF, page by page, until there is more than the store keeps."""
+    from pypdf import PasswordType, PdfReader
+    from pypdf.errors import FileNotDecryptedError
+
+    pages: list[str] = []
+    try:
+        reader = PdfReader(io.BytesIO(raw))
+        # pypdf has already tried the empty password, which opens PDFs that only restrict printing or copying.
+        locked = reader.is_encrypted and reader.decrypt("") == PasswordType.NOT_DECRYPTED
+        if not locked:
+            length = -1                          # the newlines that join the pages: one fewer than the pages
+            for page in reader.pages:
+                pages.append(page.extract_text() or "")
+                length += len(pages[-1]) + 1
+                if length > MAX_CHARS:           # the rest would be cut anyway, and long PDFs are slow to read
+                    break
+    except FileNotDecryptedError:
+        locked = True
+    except Exception as exc:  # a damaged file can raise almost anything: PdfReadError, EmptyFileError, KeyError ...
+        raise UnreadableFile(f"Duly could not read that PDF ({type(exc).__name__}): the file may be empty, damaged "
+                             "or not really a PDF.") from exc
+    if locked:
+        raise UnreadableFile("That PDF is locked with a password, so Duly cannot read it. Save a copy without the "
+                             "password and add that copy.")
+    return "\n".join(pages)
+
+
+GARBLED_RE = re.compile(r"[\x00-\x08\x0e-\x1f\x7f\ufffd]")    # NUL and other control characters, and U+FFFD
+ARABIC_RE = re.compile(r"[\u0600-\u06ff]")
+MIXED_RE = re.compile(r"[A-Za-z][\u0600-\u06ff]|[\u0600-\u06ff][A-Za-z]")
+
+
+def decode_text(raw: bytes) -> str:
+    """A text file's characters: by its byte-order mark, else UTF-8, else the Arabic or the Western Windows code
+    page."""
+    if raw.startswith(codecs.BOM_UTF8):
+        text = raw.decode("utf-8-sig", errors="replace")
+    elif raw.startswith((codecs.BOM_UTF16_LE, codecs.BOM_UTF16_BE)):
+        text = raw.decode("utf-16", errors="replace")
+    else:
+        try:
+            text = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            text = raw.decode("cp1256")          # maps every byte, so it never fails
+            try:
+                western = raw.decode("cp1252")
+            except UnicodeDecodeError:
+                western = None
+            # Western text (ä, ñ, ß ...) read as Arabic puts Arabic letters inside Latin words; Arabic text rarely does.
+            if western is not None and 2 * len(MIXED_RE.findall(text)) > len(ARABIC_RE.findall(text)):
+                text = western
+    # A binary file renamed .txt decodes too (cp1256 takes any bytes): it shows up here as NULs and other controls.
+    if len(GARBLED_RE.findall(text)) > max(2, len(text) // 100):
+        raise UnreadableFile("That file does not look like plain text. Save it as UTF-8 text or as a PDF, and add it "
+                             "again.")
+    return text
+
+
 def add_uploaded(file) -> None:
     raw = file.getvalue()
-    if file.name.lower().endswith(".pdf"):
-        from pypdf import PdfReader
-        text = "\n".join((p.extract_text() or "") for p in PdfReader(io.BytesIO(raw)).pages)
-    else:
-        text = raw.decode("utf-8", errors="replace")
+    try:
+        text = pdf_text(raw) if file.name.lower().endswith(".pdf") else decode_text(raw)
+    except UnreadableFile as exc:
+        flash("error", str(exc))
+        return
     if len(text.strip()) < 40:
-        st.sidebar.error("No text found in that file. Duly reads text and PDF files with a text layer; scanned "
-                         "images need OCR, which is not built in yet.")
+        flash("error", "No text found in that file. Duly reads text and PDF files with a text layer; scanned images "
+                       "need OCR, which is not built in yet.")
         return
     # No title from the file name: it often holds the owner's name. The store titles it from its first line.
-    doc = store.add_document("", text, filename=file.name, max_chars=int(CFG["reader"]["max_document_chars"]))
+    doc = store.add_document("", text, filename=file.name, max_chars=MAX_CHARS)
+    if doc.truncated:
+        flash("warning", f"“{R(doc.title)}” is long: only the first {MAX_CHARS:,} characters were read.")
     ok, reason = live_status()
     if ok:
+        ss.live_turns += 1                       # a live reading counts against the visit's limit, like a question
         try:
-            with st.spinner(f"Nemotron is reading “{R(doc.title)}” (it sees only the redacted copy)…"):
+            with st.spinner(f"Nemotron is reading “{md(R(doc.title))}” (it sees only the redacted copy)…"):
                 read_document(store, llm, doc, today, CFG)
-        except (LLMError, BudgetExceeded, PrivacyError, ValueError) as exc:
+        except READ_ERRORS as exc:
             doc.read_status, doc.read_note = "failed", f"could not read it: {exc}"
             store.update_document(doc)
+            flash("error", f"Nemotron could not read “{R(doc.title)}”: {exc}")
+            pause_if_down(str(exc))
     else:
         doc.read_note = f"stored, not read: live AI is paused ({reason})"
         store.update_document(doc)
 
 
+def forget_upload() -> None:
+    """After a delete: forget the last upload and empty the uploader, which would otherwise add its file again."""
+    ss.pop("last_upload", None)
+    ss.upload_round = ss.get("upload_round", 0) + 1
+
+
 with st.sidebar:
+    for kind, text in ss.pop("flash", []):
+        {"error": st.error, "warning": st.warning, "info": st.info}[kind](md(text))
     st.markdown("### Your documents")
     if docs:
         for d in docs:
             n = sum(d.hidden.values())
-            st.markdown(f"**{html.escape(R(d.title) or 'Untitled document')}**  \n<span style='color:#5B6B78;font-size:0.85rem'>"
-                        f"{n} personal detail{'s' if n != 1 else ''} hidden · {html.escape(d.read_note or d.read_status)}</span>",
+            note = (d.read_note or d.read_status) + (f" · only the first {MAX_CHARS:,} characters were read"
+                                                     if d.truncated else "")
+            st.markdown(f"**{md(html.escape(R(d.title) or 'Untitled document'))}**  \n<span style='color:#5B6B78;font-size:0.85rem'>"
+                        f"{n} personal detail{'s' if n != 1 else ''} hidden · {md(html.escape(note))}</span>",
                         unsafe_allow_html=True)
     else:
         st.caption("No documents yet. Add your own, or load the fictional samples.")
     up = st.file_uploader("Add a document (text, Markdown or PDF)", type=["txt", "md", "pdf"],
+                          key=f"upload-{ss.get('upload_round', 0)}",
                           help="Personal details are hidden on this computer before Nemotron reads the document.")
-    if up is not None and ss.get("last_upload") != (up.name, up.size):
-        ss.last_upload = (up.name, up.size)
+    if up is None:
+        ss.pop("last_upload", None)
+    elif ss.get("last_upload") != up.file_id:     # each upload has its own id, even of the same file again
+        ss.last_upload = up.file_id
         add_uploaded(up)
         st.rerun()
     c1, c2 = st.columns(2)
     if c1.button("Load samples", help="Four fictional documents: a laptop receipt, a car insurance policy, a gym "
                  "membership and a lease, dated relative to today.", width="stretch"):
-        if not any(d.filename and d.filename.startswith("0") for d in docs):
+        names = {f"{s.slug}.md" for s in load_samples(today)}
+        present = {d.filename for d in docs} & names
+        if present == names:
+            flash("info", "The sample documents are already loaded.")
+        else:
+            for d in docs:                       # some were deleted: replace the rest, so none is listed twice
+                if d.filename in present:
+                    store.delete_document(d.id)
             install_samples(store, today)
         st.rerun()
     if c2.button("Delete all", help="Deletes every document, memory, draft, placeholder and log entry.",
                  width="stretch"):
         store.wipe()
         ss.turns = []
+        ss.pop("brief", None)
+        ss.pop("flash", None)
+        forget_upload()
         st.rerun()
 
     st.markdown("### Privacy")
@@ -235,10 +354,10 @@ with st.sidebar:
 
     st.markdown("### Usage")
     spent = sum(c.cost_usd for c in llm.calls)
-    st.caption(f"This visit: {len(llm.calls)} model calls, ${spent:.4f}; {web.live_calls} live web searches.")
+    st.caption(md(f"This visit: {len(llm.calls)} model calls, ${spent:.4f}; {web.live_calls} live web searches."))
     if DEMO:
-        st.caption(f"Live questions left in this visit: {max(0, turn_cap - ss.live_turns)} of {turn_cap}. "
-                   f"Shared demo budget left today: ${ledger.remaining_usd():.2f}.")
+        st.caption(md(f"Live questions and document reads left in this visit: {max(0, turn_cap - ss.live_turns)} of "
+                      f"{turn_cap}. Shared demo budget left today: ${ledger.remaining_usd():.2f}."))
 
 
 tab_chat, tab_dead, tab_docs, tab_mem, tab_how = st.tabs(
@@ -246,7 +365,8 @@ tab_chat, tab_dead, tab_docs, tab_mem, tab_how = st.tabs(
 
 
 # ---------------------------------------------------------------- assistant
-def step_html(step) -> str:
+def step_html(step, vault: Vault | None = None) -> str:
+    restore = (vault if vault is not None else store.vault).restore
     if step.kind == "model":
         tokens = f"{step.prompt_tokens:,}+{step.completion_tokens:,} tokens · {step.latency_s:.1f} s · ${step.cost_usd:.5f}"
         return f'<div class="step">{model_badge(step.model)}{html.escape(step.summary)} <span style="color:#7A8791">· {tokens}</span></div>'
@@ -254,20 +374,30 @@ def step_html(step) -> str:
         return f'<div class="step"><span class="badge check">skill check</span>{html.escape(step.summary)}</div>'
     args = ", ".join(f"{k}={json.dumps(v, ensure_ascii=False)[:80]}" for k, v in (step.args or {}).items())
     return (f'<div class="step"><span class="badge tool">{html.escape(step.tool or "")}</span>'
-            f'{html.escape(R(args))} → {html.escape(R(step.summary))}</div>')
+            f'{html.escape(restore(args))} → {html.escape(restore(step.summary or ""))}</div>')
 
 
 USER_AVATAR, DULY_AVATAR = ":material/person:", ":material/folder_managed:"
 
 
-def render_turn(turn: Turn, recorded: bool = False) -> None:
+def render_turn(turn: Turn, vault: Vault | None = None, drafts: list[Draft] | None = None,
+                recorded: bool = False) -> None:
+    """One question and its answer. A recorded turn brings the vault and the drafts it was recorded with."""
+    vault = vault if vault is not None else store.vault
+
+    def restore(text: str | None) -> str:
+        return vault.restore(text or "")
+
     with st.chat_message("user", avatar=USER_AVATAR):
-        st.markdown(turn.question)
+        st.markdown(md(turn.question))
     with st.chat_message("assistant", avatar=DULY_AVATAR):
         if turn.error and not turn.answer:
-            st.warning(f"I could not answer this time: {turn.error}")
+            st.warning(md(f"I could not answer this time: {turn.error}"))
         else:
-            st.markdown(R(turn.answer))
+            st.markdown(md(restore(turn.answer)))
+        unfinished = getattr(turn, "unfinished", None) or []
+        if unfinished:
+            st.caption(md("Duly could not complete these steps of the skill: " + ", ".join(map(str, unfinished)) + "."))
         if turn.removed:
             st.caption(f"Duly removed {len(turn.removed)} link(s) or address(es) from this answer because they did "
                        "not come from your documents or a search result.")
@@ -276,23 +406,56 @@ def render_turn(turn: Turn, recorded: bool = False) -> None:
             meta += " · skill: " + ", ".join(turn.skills_used)
         if recorded:
             meta = f"Recorded live on {turn.at[:10]} · " + meta
-        with st.expander(f"How Duly answered ({meta})"):
-            st.markdown("".join(step_html(s) for s in turn.steps), unsafe_allow_html=True)
+        with st.expander(md(f"How Duly answered ({meta})")):
+            st.markdown("".join(step_html(s, vault) for s in turn.steps), unsafe_allow_html=True)
             st.markdown("**What the model received as your question**")
             st.html(f'<div class="doc">{highlight(turn.question_sent)}</div>')
         if turn.sources:
             with st.expander(f"Sources (via Tavily) · {len(turn.sources)}"):
                 for s in turn.sources:
-                    st.markdown(f"- [{s.title}]({s.url}) · {s.label}  \n  <span style='color:#5B6B78;font-size:0.85rem'>"
-                                f"{html.escape(s.snippet[:220])}</span>", unsafe_allow_html=True)
+                    st.markdown(f"- [{md(s.title)}]({s.url}) · {s.label}  \n  <span style='color:#5B6B78;font-size:0.85rem'>"
+                                f"{md(html.escape(s.snippet[:220]))}</span>", unsafe_allow_html=True)
+        drafts = store.drafts() if drafts is None else drafts
         for draft_id in turn.drafts:
-            d = next((x for x in store.drafts() if x.id == draft_id), None)
+            d = next((x for x in drafts if x.id == draft_id), None)
             if d is None:
                 continue
-            with st.expander(f"Draft ready to review: {R(d.title)}"):
+            with st.expander(md(f"Draft ready to review: {restore(d.title)}")):
                 st.caption("Nothing was sent. Copy it into your e-mail or the provider's form.")
-                text = (f"To: {R(d.to)}\n\n" if d.to else "") + R(d.body)
+                text = (f"To: {restore(d.to)}\n\n" if d.to else "") + restore(d.body)
                 st.text_area("Draft", text, height=220, key=f"draft-{turn.at}-{d.id}", label_visibility="collapsed")
+
+
+def recorded_store(day: date) -> Store:
+    """The fictional samples as they were on the day the conversations were recorded, in a throwaway folder kept for
+    this visit: a recording's placeholders are restored from its vault, never from the visitor's own."""
+    stores = ss.get("recorded_stores", {})
+    if day not in stores:
+        folder = tempfile.TemporaryDirectory(prefix="duly-recorded-", ignore_cleanup_errors=True)
+        sample = Store(Path(folder.name))
+        install_samples(sample, day)
+        stores[day] = (folder, sample)          # the folder is removed when the visit's session state goes
+        ss.recorded_stores = stores
+    return stores[day][1]
+
+
+def show_recordings(why: str) -> None:
+    """Conversations recorded live over the samples, shown while live AI is paused. Nothing is written to the
+    visitor's store."""
+    replays = {p: json.loads(p.read_text(encoding="utf-8")) for p in sorted(REPLAYS_DIR.glob("*.json"))}
+    turns = {p: Turn(**data["turn"]) for p, data in replays.items()}
+    if not turns:
+        st.warning(md(f"Live AI is paused: {why}."))
+        return
+    days = sorted({datetime.fromisoformat(t.at).date() for t in turns.values()})
+    st.warning(md(f"Live AI is paused: {why}. Below are conversations recorded live on "
+                  f"{' and '.join(describe(d, d).split(' (')[0] for d in days)} with the same sample documents, so "
+                  f"their dates are as of {'that day' if len(days) == 1 else 'the day each was recorded'}."))
+    pick = st.radio("Recorded questions", list(turns), format_func=lambda p: turns[p].question, horizontal=False)
+    turn = turns[pick]
+    sample = recorded_store(datetime.fromisoformat(turn.at).date())
+    render_turn(turn, vault=sample.vault, drafts=[Draft(**d) for d in replays[pick].get("drafts", [])],
+                recorded=True)
 
 
 with tab_chat:
@@ -311,13 +474,13 @@ with tab_chat:
         question = st.chat_input("Ask about your documents, deadlines, claims or renewals", disabled=not docs)
         question = question or ss.pop("pending", None)
         last = ss.turns[-1] if ss.turns else None
-        if question and last is not None and last.question == question and \
+        if question and last is not None and last.question == question and last.answer and not last.error and \
                 (datetime.now(timezone.utc) - datetime.fromisoformat(last.at)).total_seconds() < 60:
-            question = None            # the same question again within a minute: a double click, not a new one
+            question = None            # the same question again within a minute, answered: a double click
         if question:
             ctx = Context(store=store, today=today, skills=skills, web=web, allow_web=ss.allow_web)
             with st.chat_message("user", avatar=USER_AVATAR):
-                st.markdown(question)
+                st.markdown(md(question))
             with st.chat_message("assistant", avatar=DULY_AVATAR):
                 status = st.status("Hiding personal details, then asking Nemotron…", expanded=True)
 
@@ -328,20 +491,10 @@ with tab_chat:
                 status.update(label=f"Done in {turn.seconds:.0f} s", state="complete", expanded=False)
             ss.turns.append(turn)
             ss.live_turns += 1
+            pause_if_down(turn.error)
             st.rerun()
     else:
-        st.warning(f"Live AI is paused: {why}. Below are conversations recorded live with the same sample documents.")
-        replays = sorted(REPLAYS_DIR.glob("*.json"))
-        if replays:
-            names = {p: json.loads(p.read_text(encoding="utf-8"))["turn"]["question"] for p in replays}
-            pick = st.radio("Recorded questions", list(names), format_func=lambda p: names[p], horizontal=False)
-            data = json.loads(pick.read_text(encoding="utf-8"))
-            for d in data.get("drafts", []):
-                if not any(x.id == d["id"] for x in store.drafts()):
-                    from duly.store import Draft
-                    drafts = store.drafts() + [Draft(**d)]
-                    store._save("drafts.json", [x.model_dump() for x in drafts])
-            render_turn(Turn(**data["turn"]), recorded=True)
+        show_recordings(why)
 
 
 # ---------------------------------------------------------------- deadlines
@@ -349,8 +502,8 @@ with tab_dead:
     left, right = st.columns([1.05, 1])
     with left:
         st.markdown("#### Morning check")
-        st.caption("Runs every morning by itself on your computer (or from Hermes Agent's scheduler). Choosing "
-                   "what to report is plain code; Nemotron Nano only writes the short brief.")
+        st.caption("Runs every morning from a scheduled task on your computer. Choosing what to report is plain "
+                   "code; Nemotron Nano only writes the short brief.")
         c1, c2 = st.columns([1, 1])
         as_of = c1.date_input("As of", value=today, help="Try a later date to see how the brief changes.")
         if c2.button("Run the morning check", type="primary", width="stretch"):
@@ -363,7 +516,7 @@ with tab_dead:
         if brief is not None:
             st.markdown(f"**{describe(brief.day, brief.day).split(' (')[0]}** · written by "
                         f"{badge_of(brief.written_by) if brief.written_by != 'template' else 'a template (offline)'}")
-            st.markdown(R(brief.text))
+            st.markdown(md(R(brief.text)))
             for a in brief.alerts:
                 cls = "alert-" + a.urgency.replace(" ", "-")
                 st.markdown(f'<div class="{cls}"><b>{html.escape(R(a.title))}</b> · {html.escape(R(a.source))}<br>'
@@ -405,8 +558,9 @@ with tab_dead:
         st.dataframe(rows, width="stretch", hide_index=True)
         with st.expander("The document's own words for each date"):
             for o in items:
-                st.markdown(f"**{html.escape(R(o.title))}** · {KIND_LABELS.get(o.kind, '')}  \n"
-                            f"“{html.escape(R(o.date_quote or ''))}”" + (f"  \n“{html.escape(R(o.rule_quote))}”" if o.rule_quote else ""))
+                st.markdown(md(f"**{html.escape(R(o.title))}** · {KIND_LABELS.get(o.kind, '')}  \n"
+                               f"“{html.escape(R(o.date_quote or ''))}”"
+                               + (f"  \n“{html.escape(R(o.rule_quote))}”" if o.rule_quote else "")))
         lead = store.profile().lead_days
         st.download_button("Add these dates to my calendar (.ics)", to_ics(items, store.vault, lead, today),
                            file_name="duly-deadlines.ics", mime="text/calendar",
@@ -421,10 +575,13 @@ with tab_docs:
     for d in docs:
         n = sum(d.hidden.values())
         kinds = ", ".join(f"{v} {KINDS[k]}{'s' if v > 1 else ''}" for k, v in sorted(d.hidden.items()))
-        with st.expander(f"{R(d.title)} · {n} details hidden" + (f" ({kinds})" if kinds else "")):
+        with st.expander(md(f"{R(d.title)} · {n} details hidden" + (f" ({kinds})" if kinds else ""))):
+            if d.truncated:
+                st.caption(f"Only the first {MAX_CHARS:,} characters were read; the rest of the file was not kept, "
+                           "so dates after that point are not tracked.")
             if d.read_by or d.read_note:
-                st.caption(f"Read by {badge_of(d.read_by) if d.read_by else '—'} · {d.read_note or d.read_status}"
-                           + (f" · {d.summary and R(d.summary)}" if d.summary else ""))
+                st.caption(md(f"Read by {badge_of(d.read_by) if d.read_by else '—'} · {d.read_note or d.read_status}"
+                              + (f" · {R(d.summary)}" if d.summary else "")))
             c1, c2 = st.columns(2)
             c1.markdown("**Your copy** (stays on this computer)")
             c1.html(f'<div class="doc">{html.escape(d.original)}</div>')
@@ -432,14 +589,19 @@ with tab_docs:
             c2.html(f'<div class="doc">{highlight(d.redacted)}</div>')
             b1, b2, _ = st.columns([1, 1, 2])
             if b1.button("Read again with Nemotron", key=f"read-{d.id}", disabled=not live_status()[0]):
+                ss.live_turns += 1                   # a live reading counts against the visit's limit
                 try:
                     with st.spinner("Reading the redacted copy…"):
                         read_document(store, llm, d, today, CFG)
-                except (LLMError, BudgetExceeded, PrivacyError, ValueError) as exc:
-                    st.error(f"Could not read it: {exc}")
+                except READ_ERRORS as exc:
+                    d.read_status, d.read_note = "failed", f"could not read it again: {exc}"
+                    store.update_document(d)
+                    flash("error", f"Nemotron could not read “{R(d.title)}” again: {exc}")
+                    pause_if_down(str(exc))
                 st.rerun()
             if b2.button("Delete this document", key=f"del-{d.id}"):
                 store.delete_document(d.id)
+                forget_upload()
                 st.rerun()
     st.markdown("#### The placeholder vault")
     show = st.toggle("Show the real values", value=False)
@@ -458,8 +620,8 @@ with tab_docs:
                    + " The check can only stop details the detectors found, so read what was sent below.")
         for r in reversed(log[-40:]):
             when = r.at[11:19]
-            with st.expander(f"{when} · {r.destination} · {r.purpose} · {r.chars:,} characters · "
-                             f"{r.placeholders} placeholders · {'✓ no vault value in it' if r.check == 'passed' else '✗ blocked'}"):
+            with st.expander(md(f"{when} · {r.destination} · {r.purpose} · {r.chars:,} characters · "
+                                f"{r.placeholders} placeholders · {'✓ no vault value in it' if r.check == 'passed' else '✗ blocked'}")):
                 payload = r.payload
                 instructions = ""
                 if payload.startswith("[system]") and "\n\n[" in payload:
@@ -483,7 +645,7 @@ with tab_mem:
         if notes:
             for n in notes:
                 a, b = st.columns([5, 1])
-                a.markdown(f"{html.escape(R(n.text))}  \n<span style='color:#7A8791;font-size:0.8rem'>{n.source} · "
+                a.markdown(f"{md(html.escape(R(n.text)))}  \n<span style='color:#7A8791;font-size:0.8rem'>{n.source} · "
                            f"{n.created_at[:10]}</span>", unsafe_allow_html=True)
                 if b.button("Forget", key=f"forget-{n.id}"):
                     store.forget_note(n.id)
@@ -498,7 +660,7 @@ with tab_mem:
         st.markdown("#### Drafts")
         drafts = store.drafts()
         for d in reversed(drafts):
-            with st.expander(R(d.title)):
+            with st.expander(md(R(d.title))):
                 text = (f"To: {R(d.to)}\n\n" if d.to else "") + R(d.body)
                 st.text_area("Draft", text, height=200, key=f"mem-draft-{d.id}", label_visibility="collapsed")
                 a, b = st.columns(2)
@@ -523,7 +685,7 @@ with tab_mem:
             st.markdown("#### Reminders you or the assistant added")
             for o in reminders:
                 a, b = st.columns([5, 1])
-                a.markdown(f"{html.escape(R(o.title))} · {describe(o.due_date, today)}")
+                a.markdown(md(f"{html.escape(R(o.title))} · {describe(o.due_date, today)}"))
                 if b.button("Remove", key=f"rem-{o.id}"):
                     store.delete_obligation(o.id)
                     st.rerun()
@@ -539,7 +701,7 @@ digraph {
   subgraph cluster_local { label="Your computer"; style="rounded"; color="#0F766E"; fontname="Helvetica";
     docs [label="Your documents\\n(originals)"]; fw [label="Privacy firewall\\nplaceholders + vault", fillcolor="#DDEFEE"];
     mem [label="Memory\\ndeadlines, facts, drafts"]; tools [label="Tools + skills\\n(SKILL.md)"]; gate [label="Gateway\\nleak check + log", fillcolor="#DDEFEE"];
-    sched [label="Morning check\\n(scheduler or Hermes cron)"] }
+    sched [label="Morning check\\n(scheduled task)"] }
   tf [label="Nebius Token Factory\\nNemotron Nano: route, brief\\nNemotron Super: read, act"]; tav [label="Tavily\\nofficial procedures"];
   docs -> fw -> mem; mem -> tools; tools -> gate; sched -> mem; gate -> tf [label="redacted text only"]; gate -> tav [label="search queries"];
 }""")
@@ -549,14 +711,14 @@ digraph {
     st.markdown("""
 | Model (on Nebius Token Factory) | Job | Why this model |
 |---|---|---|
-| Nemotron 3 Nano 30B-A3B | picks the skill for each question; writes the morning brief | small and fast: about a second, a few hundredths of a cent |
+| Nemotron 3 Nano 30B-A3B | picks the skill for each question; writes the morning brief | small and fast: about a second, a few thousandths of a cent |
 | Nemotron 3 Super 120B-A12B | reads documents (JSON schema); runs the assistant with tools | reliable tool calling and structured output |
 """)
     if used:
-        st.caption("Measured in this visit: " + "; ".join(
+        st.caption(md("Measured in this visit: " + "; ".join(
             f"{badge_of(m)}: {len(cs)} call{'s' if len(cs) != 1 else ''}, median "
             f"{sorted(c.latency_s for c in cs)[len(cs) // 2]:.1f} s, ${sum(c.cost_usd for c in cs):.5f}"
-            for m, cs in used.items()))
+            for m, cs in used.items())))
     st.markdown("""
 **Privacy, in five rules**
 1. Code on your computer finds personal details (IBANs and cards with checksums, ID and phone numbers, e-mails, labelled
@@ -568,9 +730,8 @@ digraph {
    each deadline shows the document's own words.
 5. Links and e-mail addresses in an answer must come from a document or a search result; others are removed.
 
-**Always on.** `scripts/morning.py` runs the morning check from Windows Task Scheduler or cron. The same tools are also an
-MCP server (`python -m duly.mcp_server`), so Hermes Agent can use Duly from Telegram or its own cron, with
-Nemotron through its Nebius Token Factory provider.
+**Always on.** `scripts/morning.py` runs the morning check from Windows Task Scheduler or cron. The same tools also run
+as an MCP server, for agents such as Hermes Agent (tested with an MCP client). Start it with `python -m duly.mcp_server`.
 
 **Limits.** Duly reads text and PDFs with a text layer (no OCR yet). The detectors are rules, so an unusual format can be
 missed; the vault, the leak check and the log make that visible. Duly drafts but never sends, and it does not give legal or
