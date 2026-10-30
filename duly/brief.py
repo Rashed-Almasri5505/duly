@@ -2,7 +2,7 @@
 
 Choosing what to report is plain code (dates and notice periods, no model). Nemotron Nano then writes a short,
 friendly brief from the redacted list; if it is unavailable, a plain template is used, so the check works
-offline too. On a computer it runs from the scheduler (python -m duly.morning), in Hermes Agent from its cron.
+offline too. On a computer it runs from a scheduled task (scripts/morning.py).
 """
 
 from __future__ import annotations

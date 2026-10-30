@@ -2,9 +2,9 @@
 
     python -m duly.mcp_server            # stdio; uses DULY_DATA_DIR or data/user
 
-Every tool returns redacted text: placeholders instead of personal details, exactly what Duly's own assistant sees.
-So the agent's model (for Hermes, Nemotron through its Nebius Token Factory provider) never receives the values
-in your documents. What you type to that agent yourself does not pass through Duly's firewall.
+Every tool returns redacted text, masked against the vault: placeholders instead of the personal details Duly's
+detectors found, as Duly's own assistant sees them. What you type to that agent yourself does not pass through
+Duly's firewall. Tested with an MCP client over stdio; not yet run inside Hermes Agent itself.
 """
 
 from __future__ import annotations

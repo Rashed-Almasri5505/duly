@@ -192,7 +192,7 @@ Then add your own documents in the sidebar, or click **Load samples**. Your data
 Other commands:
 
 ```bash
-pytest                                                   # 55 tests, no network
+pytest                                                   # 111 tests, no network
 python scripts/smoke_test.py                             # checks the models and Tavily (under one cent)
 python scripts/ask.py "What do I need to do in the next 30 days?"
 python scripts/morning.py                                # the morning check; schedule it once (see the file)
@@ -226,7 +226,7 @@ skills/                 Agent Skills (SKILL.md)
 samples/                fictional documents, dated relative to today, and a recorded reading
 data/replays/           conversations recorded live, for offline mode
 scripts/                smoke test, CLI, morning check, evaluation, recorders
-tests/                  55 tests (42 of them for the privacy firewall)
+tests/                  111 tests (91 of them for the privacy firewall)
 eval/                   evaluation results
 ```
 
@@ -235,8 +235,8 @@ eval/                   evaluation results
 - Personal details are found by rules, and rules miss things. A name that is neither labelled nor in your profile
   ("Yours sincerely, Layla Haddad") is the main gap; unusual number formats are another. Before a model call, the leak
   check can only block values the detectors found. The side-by-side view and the outbound log show exactly what was
-  sent, so a miss is visible. An independent audit on 30 Oct 2026 found 13 such gaps; all 13 are fixed and each has a
-  test in `tests/test_privacy_audit.py`.
+  sent, so a miss is visible. Two independent audit rounds on 30 Oct 2026 found 23 such gaps (10 of them in the first rewrite
+  of the detectors); all are fixed and each has a test in `tests/test_privacy_audit.py`.
 - Duly reads text and PDFs with a text layer; scanned images need OCR, which is next.
 - The model provider still receives the redacted text (dates, amounts, company names).
   Next: run Nemotron Nano on the user's own GPU for the reading step, and run Duly inside an NVIDIA OpenShell sandbox

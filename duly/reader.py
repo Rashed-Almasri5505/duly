@@ -1,10 +1,10 @@
 """Reads a document into dated obligations: renewals, expiries, payments, notice periods, warranty ends.
 
-The model never writes a date. Code first finds every date written in the redacted document and numbers
-them (D1, D2 ...). Nemotron Super then says which of those dates matter and what each one means, choosing
-from the numbered list in a strict JSON schema. The quote for each date is its line in the document, and a
-notice period counts only if code finds the number of days in a sentence of the document. Anything that
-fails a check is kept but marked "check this", so a misread is never presented as fact.
+The model never reads a date out of the document itself. Code first finds every date written in the redacted
+document and numbers them (D1, D2 ...). Nemotron Super then says which of those dates matter and what each one
+means, choosing from the numbered list in a strict JSON schema. The quote for each date is its line in the
+document, and a notice period is marked "check this" unless code finds the number of days in a sentence of the
+document. Anything that fails a check is kept but marked, so a misread is never presented as confirmed.
 
 Measured on 2026-10-30, before this design: when Super wrote dates itself, it read 03/01/2027 as 1 March,
 and subtracted a notice period from a date that already had it applied. The checks flagged both.

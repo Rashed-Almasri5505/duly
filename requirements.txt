@@ -1,4 +1,4 @@
-# Pinned versions, tested with Python 3.13 (30 Oct 2026). A change here makes Streamlit Cloud restart the app fully.
+# Pinned versions, tested with Python 3.13 (30 Oct 2026, round 2). A change here makes Streamlit Cloud restart the app fully.
 openai==3.35.1
 tavily-python==0.8.5
 pydantic==2.14.1
