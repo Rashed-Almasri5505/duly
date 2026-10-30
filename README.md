@@ -79,7 +79,7 @@ flowchart LR
 | Model (on Nebius Token Factory) | Job in Duly | Why this model | Measured (30 Oct 2026) |
 |---|---|---|---|
 | `nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B` | picks the skill for each question; writes the morning brief | small and fast for short, structured jobs | about 1 s and $0.00002 per routing call |
-| `nvidia/nemotron-3-super-120b-a12b` | reads each document into dated obligations (JSON schema); runs the assistant with tool calling | reliable tool calling and structured output | 2.2 s and $0.0006 per document; 4 to 14 s and $0.002 to $0.010 per question |
+| `nvidia/nemotron-3-super-120b-a12b` | reads each document into dated obligations (JSON schema); runs the assistant with tool calling | reliable tool calling and structured output | 2.2 s and $0.0006 per document; 4 to 15 s and $0.002 to $0.010 per question |
 
 Lessons from building on them, also in our feedback:
 
