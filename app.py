@@ -195,7 +195,7 @@ with st.sidebar:
     if docs:
         for d in docs:
             n = sum(d.hidden.values())
-            st.markdown(f"**{html.escape(R(d.title))}**  \n<span style='color:#5B6B78;font-size:0.85rem'>"
+            st.markdown(f"**{html.escape(R(d.title) or 'Untitled document')}**  \n<span style='color:#5B6B78;font-size:0.85rem'>"
                         f"{n} personal detail{'s' if n != 1 else ''} hidden · {html.escape(d.read_note or d.read_status)}</span>",
                         unsafe_allow_html=True)
     else:
