@@ -11,7 +11,17 @@ PERSONAL = ["Sami Nasser", "1098765432", "+966 50 555 0134", "0505550134", "sami
             "JTNB11HK0N3045217", "14/03/1994", "HMI-MTR-2291-4471", "PF-88213", "7XK2Q93", "INV-2025-118204",
             "10-2025-0045821", "memberships@pulsefitness.example"]
 KEPT = ["Harbor Mutual Insurance", "PULSE FITNESS CLUB", "Al Noor Real Estate Co.", "Northwind Electronics",
-        "Dell XPS 13 9350", "SAR 3,600", "10,500", "29 November 2026", "Najm", "920 000 000"]
+        "Dell XPS 13 9350", "SAR 3,600", "10,500", "29 November 2026", "Najm", "920 000 000", "800 000 0000",
+        "Toyota Camry 2022", "Branch: Al Yasmin", "ending 4417"]
+# Exactly what the four samples put in the vault, in order: nothing more is hidden and nothing is split in two.
+SAMPLE_VAULT = {
+    "[PERSON_1]": "Sami Nasser", "[ACCOUNT_1]": "INV-2025-118204", "[PHONE_1]": "+966 50 555 0134",
+    "[EMAIL_1]": "sami.nasser@example.com", "[SERIAL_1]": "7XK2Q93", "[ACCOUNT_2]": "HMI-MTR-2291-4471",
+    "[NATIONAL_ID_1]": "1098765432", "[BIRTHDATE_1]": "14/03/1994",
+    "[ADDRESS_1]": "Building 4127, Al Yasmin District, Riyadh 13325", "[PLATE_1]": "4821 RJA",
+    "[VIN_1]": "JTNB11HK0N3045217", "[ACCOUNT_3]": "PF-88213", "[EMAIL_2]": "memberships@pulsefitness.example",
+    "[ACCOUNT_4]": "10-2025-0045821", "[IBAN_1]": "SA03 8000 0000 6080 1016 7519",
+}
 
 
 @pytest.fixture
@@ -34,6 +44,11 @@ def test_companies_dates_and_amounts_are_kept(redacted: tuple[Vault, str]) -> No
     _, text = redacted
     for value in KEPT:
         assert value in text, value
+
+
+def test_the_samples_fill_the_vault_with_exactly_these_values(redacted: tuple[Vault, str]) -> None:
+    vault, _ = redacted
+    assert {p: e.value for p, e in vault.entries.items()} == SAMPLE_VAULT
 
 
 def test_same_number_in_two_formats_gets_one_placeholder() -> None:
